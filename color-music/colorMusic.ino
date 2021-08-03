@@ -234,9 +234,9 @@ void loop() {
   if(recieverDelay < currentDelay){
     serialTick(); //получение и обработка serial команд
   }
-  if(on && !computerControlled){
-    remoteTick();     // опрос и обработка ИК пульта
-    if(recieverDelay < currentDelay){
+  if(!computerControlled){
+    remoteTick();
+    if(on && recieverDelay < currentDelay){
      mainLoop();       // главный цикл обработки и отрисовки
      eepromTick();     // проверка не пора ли сохранить настройки
     }
@@ -700,11 +700,11 @@ void remoteTick() {
         MAX_COEF_FREQ -= 0.1;
         break;
       case BUTT_BRIGHTNESS_SYNC:
-        if(brightnessSync == 1){
-          brightnessSync = 0;
-        }else{
-          brightnessSync = 1;
+        on = !on;
+        for (int i = 0; i < NUM_LEDS; i++) {
+          leds[i] = CRGB(0, 0, 0);
         }
+        FastLED.show();
         break;
       case BUTT_PALETTE_MINUS:
           if (--currentPalette < 0) currentPalette = 6;
