@@ -122,6 +122,7 @@ CRGBPalette32 myPal = soundlevel_gp;
 
 boolean on = true;
 boolean computerControlled = false;
+int ignoreTimer = 0;
 
 int Rlenght, Llenght;
 float RsoundLevel, RsoundLevel_f;
@@ -151,8 +152,7 @@ int freq_f[32];
 int this_color;
 boolean running_flag[3], eeprom_flag;
 
-float countDownDelay = 1000;
-float currentDelay;
+float currentTime;
 float recieverDelay;
 
 float currentStrobeRed;
@@ -167,7 +167,6 @@ float prevValues[UV_SMOOTNESS];
 int prevI;
 
 int currentPalette = 0;
-byte brightnessSync = 0;
 
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
@@ -230,13 +229,11 @@ void setup() {
 }
 
 void loop() {
-  currentDelay = millis();
-  if(recieverDelay < currentDelay){
-    serialTick(); //получение и обработка serial команд
-  }
+  currentTime = millis();
+  serialTick(); //получение и обработка serial команд
   if(!computerControlled){
     remoteTick();
-    if(on && recieverDelay < currentDelay){
+    if(on && recieverDelay < currentTime){
      mainLoop();       // главный цикл обработки и отрисовки
      eepromTick();     // проверка не пора ли сохранить настройки
     }
@@ -412,9 +409,6 @@ void animation() {
         }
         break;
       }
-      if(brightnessSync == 1){
-         FastLED.setBrightness(BRIGHTNESS + Rlenght/1.5);
-      }
       break;
     case 1:
       if (millis() - rainbow_timer > 30) {
@@ -437,9 +431,6 @@ void animation() {
           leds[i] = this_dark;
         for (int i = MAX_CH + Llenght; i < NUM_LEDS; i++)
           leds[i] = this_dark;
-      }
-      if(brightnessSync == 1){
-         FastLED.setBrightness(BRIGHTNESS + Rlenght/1.5);
       }
       break;
     case 2:
@@ -571,7 +562,8 @@ float smartIncrFloat(float value, float incr_step, float mininmum, float maximum
 
 void serialTick(){
   if(Serial.available() > 0){
-    byte comm = Serial.read();
+  byte comm = Serial.read();
+  if(ignoreTimer < currentTime){
     if(comm == 112){//p char
       on = !on;
       Serial.println("[#63c8ff]INFO:Power state:" + (String)(on ? "on" : "off"));
@@ -582,9 +574,6 @@ void serialTick(){
     }else if(comm == 99){//c char
       computerControlled = !computerControlled;
       Serial.println("[#63c8ff]INFO:Mode - " + (String)(computerControlled ? "external" : "self"));
-    }else if(comm == 97){//a char
-      brightnessSync = !brightnessSync;
-      Serial.println("[#63c8ff]INFO:Brightness sync is " + (String)(brightnessSync ? "on" : "off"));
     }else if(comm == 108){//l char
       while(true){
         if(Serial.available() > 0){
@@ -607,14 +596,10 @@ void serialTick(){
           break;
         }
       }
-    }else if(comm == 102){//f char
-      if(!computerControlled){
-        Serial.println("[#ffd063]WARNING:Can't execute, use external control");
-      }
     }else if(comm == 109){//m char
       while(true){
         if(Serial.available() > 0){
-          this_mode = (int)Serial.read();
+          this_mode = Serial.read();
           Serial.println("[#63c8ff]INFO:Set mode to " + (String)this_mode);
           eeprom_flag = true;
           eeprom_timer = millis();
@@ -624,6 +609,7 @@ void serialTick(){
     }else if(comm != 10){
       Serial.println("e");
     }
+  }
     if(computerControlled && comm == 102){
       byte currByte;
       int currLedIndex = 0;
@@ -645,6 +631,7 @@ void serialTick(){
         }
       }
       FastLED.show();
+      ignoreTimer = currentTime + 1000;
     }
   }
 }
@@ -653,7 +640,7 @@ void remoteTick() {
   if (irrecv.decode(&results)) { // если данные пришли
     eeprom_timer = millis();
     eeprom_flag = true;
-    recieverDelay = currentDelay + countDownDelay; 
+    recieverDelay = currentTime + 1000; 
     irrecv.resume(); // Receive the next value
     switch (results.value) {
       // режимы
