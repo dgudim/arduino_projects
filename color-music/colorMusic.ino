@@ -8,6 +8,7 @@
 // ----- настройки ленты
 #define NUM_LEDS 120        // количество светодиодов (данная версия поддерживает до 410 штук)
 byte BRIGHTNESS = 130;      // яркость по умолчанию (0 - 255)
+byte EMPTY_BRIGHT = 35;     // яркость "не горящих" светодиодов (0 - 255)
 
 // ----- пины подключения
 #define SOUND_R A3         // аналоговый пин вход аудио, правый канал
@@ -31,7 +32,6 @@ float RAINBOW_STEP = 5.00;         // шаг изменения цвета ра�
 #define MONO 1                    // 1 - только один канал (ПРАВЫЙ!!!!! SOUND_R!!!!!), 0 - два канала
 #define EXP 1.1                   // степень усиления сигнала (для более "резкой" работы) (по умолчанию 1.4)
 #define POTENT 1                 // 1 - используем потенциометр, 0 - используется внутренний источник опорного напряжения 1.1 В
-byte EMPTY_BRIGHT = 35;           // яркость "не горящих" светодиодов (0 - 255)
 #define EMPTY_COLOR HUE_PURPLE    // цвет "не горящих" светодиодов. Будет чёрный, если яркость 0
 
 // ----- нижний порог шумов
@@ -237,7 +237,6 @@ void loop() {
   if(on && !computerControlled){
     remoteTick();     // опрос и обработка ИК пульта
     if(recieverDelay < currentDelay){
-     //buttonTick();     // опрос и обработка кнопки
      mainLoop();       // главный цикл обработки и отрисовки
      eepromTick();     // проверка не пора ли сохранить настройки
     }
@@ -576,7 +575,9 @@ void serialTick(){
     if(comm == 112){//p char
       on = !on;
       Serial.println("[#63c8ff]INFO:Power state:" + (String)(on ? "on" : "off"));
-      FastLED.setBrightness(on ? BRIGHTNESS : 0);
+      for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = CRGB(0, 0, 0);
+      }
       FastLED.show();
     }else if(comm == 99){//c char
       computerControlled = !computerControlled;
@@ -697,14 +698,6 @@ void remoteTick() {
         MAX_COEF_FREQ += 0.1;
       case BUTT_MINUS:
         MAX_COEF_FREQ -= 0.1;
-        break;
-      case BUTT_BRIGHTNESS_ONE:
-        BRIGHTNESS = 130;
-        FastLED.setBrightness(BRIGHTNESS);
-        break;
-      case BUTT_BRIGHTNESS_TWO:
-        BRIGHTNESS = 210;
-        FastLED.setBrightness(BRIGHTNESS);
         break;
       case BUTT_BRIGHTNESS_SYNC:
         if(brightnessSync == 1){
@@ -854,8 +847,6 @@ void updateEEPROM() {
   EEPROM.updateInt(44, COLOR_SPEED);
   EEPROM.updateInt(48, RAINBOW_PERIOD);
   
-  EEPROM.updateInt(60, EMPTY_BRIGHT);
-  EEPROM.updateInt(64, BRIGHTNESS);
   Serial.println("[#63c8ff]INFO: Updated EEPROM");
 }
 void readEEPROM() {
@@ -875,8 +866,6 @@ void readEEPROM() {
   COLOR_SPEED = EEPROM.readInt(44);
   RAINBOW_PERIOD = EEPROM.readInt(48);
   
-  EMPTY_BRIGHT = EEPROM.readInt(60);
-  BRIGHTNESS = EEPROM.readInt(64);
   Serial.println("[#63c8ff]INFO:Loaded saved settings from EEPROM");
 }
 void eepromTick() {
