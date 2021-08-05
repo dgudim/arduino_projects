@@ -103,9 +103,6 @@ float freq_to_stripe = NUM_LEDS / 40; // /2 так как симметрия, и
 #include "FastLED.h"
 CRGB leds[NUM_LEDS];
 
-//#include "GyverButton.h"
-//GButton butt1(BTN_PIN);
-
 #include <IRremote.h>
 IRrecv irrecv(IR_PIN);
 decode_results results;
@@ -122,7 +119,7 @@ CRGBPalette32 myPal = soundlevel_gp;
 
 boolean on = true;
 boolean computerControlled = false;
-int ignoreTimer = 0;
+float ignoreTimer = 0;
 
 int Rlenght, Llenght;
 float RsoundLevel, RsoundLevel_f;
@@ -225,6 +222,7 @@ void setup() {
   }
   
   Serial.println("mm"+(String)this_mode+"_"+(String)uv_mode+"_"+(String)light_mode);
+  delay(1000);
   Serial.println("[#63c8ff]INFO:Initialization complete");
 }
 
@@ -563,7 +561,7 @@ float smartIncrFloat(float value, float incr_step, float mininmum, float maximum
 void serialTick(){
   if(Serial.available() > 0){
   byte comm = Serial.read();
-  if(ignoreTimer < currentTime){
+  if(currentTime - ignoreTimer > 1000){
     if(comm == 112){//p char
       on = !on;
       Serial.println("[#63c8ff]INFO:Power state:" + (String)(on ? "on" : "off"));
@@ -606,7 +604,7 @@ void serialTick(){
           break;
         }
       }
-    }else if(comm != 10){
+    }else if(comm != 10 && comm != 102){
       Serial.println("e");
     }
   }
@@ -615,6 +613,7 @@ void serialTick(){
       int currLedIndex = 0;
       int currBufferIndex = 0;
       byte recievedColorArrayBuffer[3];
+      recievedColorArrayBuffer[4] = 3;
       while(true){
         if(currLedIndex >= NUM_LEDS){
               break;
@@ -630,8 +629,8 @@ void serialTick(){
           currBufferIndex ++;
         }
       }
+      ignoreTimer = currentTime;
       FastLED.show();
-      ignoreTimer = currentTime + 1000;
     }
   }
 }
