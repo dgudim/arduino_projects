@@ -85,7 +85,7 @@ float RAINBOW_STEP_2 = 0.5;
 #define BUTT_LOW_PASS         16748655
 #define BUTT_BRIGHTNESS_ONE   16750695
 #define BUTT_BRIGHTNESS_TWO   16756815
-#define BUTT_BRIGHTNESS_SYNC  16761405
+#define BUTT_POWER           16761405
 
 // ------------------------------ ДЛЯ РАЗРАБОТЧИКОВ --------------------------------
 #define MODE_AMOUNT 8      // количество режимов
@@ -118,7 +118,6 @@ DEFINE_GRADIENT_PALETTE(soundlevel_gp) {
 CRGBPalette32 myPal = soundlevel_gp;
 
 boolean on = true;
-boolean computerControlled = false;
 float ignoreTimer = 0;
 
 int Rlenght, Llenght;
@@ -170,7 +169,7 @@ int currentPalette = 0;
 // ------------------------------ ДЛЯ РАЗРАБОТЧИКОВ --------------------------------
 
 void setup() {
-  Serial.begin(1000000);
+  Serial.begin(1500000);
   FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS).setCorrection( TypicalLEDStrip );
   FastLED.setBrightness(BRIGHTNESS);
 
@@ -179,7 +178,6 @@ void setup() {
 
   pinMode(POT_GND, OUTPUT);
   digitalWrite(POT_GND, LOW);
-  //butt1.setTimeout(900);
 
   Serial.println("[#63c8ff]INFO:Enabling IRin");
   irrecv.enableIRIn(); // Start the receiver
@@ -229,7 +227,7 @@ void setup() {
 void loop() {
   currentTime = millis();
   serialTick(); //получение и обработка serial команд
-  if(!computerControlled){
+  if(currentTime - ignoreTimer > 1000){
     remoteTick();
     if(on && recieverDelay < currentTime){
      mainLoop();       // главный цикл обработки и отрисовки
@@ -569,9 +567,6 @@ void serialTick(){
         leds[i] = CRGB(0, 0, 0);
       }
       FastLED.show();
-    }else if(comm == 99){//c char
-      computerControlled = !computerControlled;
-      Serial.println("[#63c8ff]INFO:Mode - " + (String)(computerControlled ? "external" : "self"));
     }else if(comm == 108){//l char
       while(true){
         if(Serial.available() > 0){
@@ -608,7 +603,7 @@ void serialTick(){
       Serial.println("e");
     }
   }
-    if(computerControlled && comm == 102){
+    if(comm == 102){
       byte currByte;
       int currLedIndex = 0;
       int currBufferIndex = 0;
@@ -685,7 +680,7 @@ void remoteTick() {
       case BUTT_MINUS:
         MAX_COEF_FREQ -= 0.1;
         break;
-      case BUTT_BRIGHTNESS_SYNC:
+      case BUTT_POWER:
         on = !on;
         for (int i = 0; i < NUM_LEDS; i++) {
           leds[i] = CRGB(0, 0, 0);
@@ -784,6 +779,7 @@ void autoLowPass() {
 }
 
 void analyzeAudio() {
+  
   for (int i = 0 ; i < FHT_N ; i++) {
     int sample = analogRead(SOUND_R_FREQ);
     fht_input[i] = sample; // put real data into bins
@@ -792,18 +788,6 @@ void analyzeAudio() {
   fht_reorder(); // reorder the data before doing the fht
   fht_run();     // process the data in the fht
   fht_mag_log(); // take the output of the fht
-}
-
-void buttonTick() {
-  /*
-  butt1.tick();  // обязательная функция отработки. Должна постоянно опрашиваться
-  if (butt1.isSingle())                              // если единичное нажатие
-    if (++this_mode >= MODE_AMOUNT) this_mode = 0;   // изменить режим
-
-  if (butt1.isHolded()) {     // кнопка удержана
-    fullLowPass();
-  }
-  */
 }
 void fullLowPass() {
   digitalWrite(MLED_PIN, HIGH);   // включить светодиод
