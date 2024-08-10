@@ -2,7 +2,8 @@
 
 #define IR_RECEIVE_PIN 2 // ИК пин
 #define STRIP_PIN 5      // пин ленты
-#define NUMLEDS 50       // кол-во светодиодов
+#define LAMP_PIN 8
+#define NUMLEDS 50 // кол-во светодиодов
 
 #include <microLED.h>
 microLED<NUMLEDS, STRIP_PIN, MLED_NO_CLOCK, LED_WS2812, ORDER_GRB, CLI_AVER> strip;
@@ -58,49 +59,77 @@ enum CurrentGrad {
     BLUE
 };
 
+bool repeat_flag() {
+    return IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT;
+}
+
+void lamps_on() {
+    digitalWrite(LAMP_PIN, HIGH);
+}
+
+void lamps_off() {
+    digitalWrite(LAMP_PIN, LOW);
+}
+
 void setup() {
+    pinMode(LAMP_PIN, OUTPUT);
+    lamps_off();
+
     // Speed of the animation
     int count_increment = 5;
 
-    // For power on/off
+    // For power on/off animation (return to previous brightness on power on)
     int last_saved_target_brightness = 220;
 
     int current_brightness = 220;
     int target_brightness = 220;
 
+    // State of the lamps
+    bool lamps_active = false;
+
+    
+
     CurrentGrad current_gradient = CurrentGrad::BLUE;
 
     IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
 
-    mGradient<8> blue_orange_grad;
-    blue_orange_grad.colors[0] = mRed;
-    blue_orange_grad.colors[1] = mPurple;
-    blue_orange_grad.colors[2] = mBlue;
-    blue_orange_grad.colors[3] = mBlue;
-    blue_orange_grad.colors[4] = mMagenta;
-    blue_orange_grad.colors[5] = mRed;
-    blue_orange_grad.colors[6] = mYellow;
-    blue_orange_grad.colors[7] = mOrange;
+    mGradient<8> blue_grad;
+    blue_grad.colors[0] = mRed;
+    blue_grad.colors[1] = mPurple;
+    blue_grad.colors[2] = mBlue;
+    blue_grad.colors[3] = mBlue;
+    blue_grad.colors[4] = mMagenta;
+    blue_grad.colors[5] = mRed;
+    blue_grad.colors[6] = mYellow;
+    blue_grad.colors[7] = mOrange;
 
-    mGradient<8> red_green_grad;
-    red_green_grad.colors[0] = mRed;
-    red_green_grad.colors[1] = mGreen;
-    red_green_grad.colors[2] = mLime;
-    red_green_grad.colors[3] = mBlue;
-    red_green_grad.colors[4] = mMagenta;
-    red_green_grad.colors[5] = mRed;
-    red_green_grad.colors[6] = mMaroon;
-    red_green_grad.colors[7] = mOrange;
+    mGradient<6> yellow_grad;
+    yellow_grad.colors[0] = mYellow;
+    yellow_grad.colors[1] = 0xd98e43;
+    yellow_grad.colors[2] = 0xffa200;
+    yellow_grad.colors[3] = 0xff8000;
+    yellow_grad.colors[4] = 0xc49206;
+    yellow_grad.colors[5] = 0xe3a64b;
 
-    mGradient<8> red_orange_grad;
-    red_orange_grad.colors[0] = mRed;
-    red_orange_grad.colors[1] = mMaroon;
-    red_orange_grad.colors[2] = mRed;
-    red_orange_grad.colors[3] = mRed;
-    red_orange_grad.colors[4] = mMaroon;
-    red_orange_grad.colors[5] = mWhite;
-    red_orange_grad.colors[6] = mYellow;
-    red_orange_grad.colors[7] = mOrange;
+    mGradient<8> green_grad;
+    green_grad.colors[0] = mRed;
+    green_grad.colors[1] = 0xffa200;
+    green_grad.colors[2] = mLime;
+    green_grad.colors[3] = 0x996100;
+    green_grad.colors[4] = 0x258a00;
+    green_grad.colors[5] = mYellow;
+    green_grad.colors[6] = 0xff8000;
+    green_grad.colors[7] = mOrange;
+
+    mGradient<8> red_grad;
+    red_grad.colors[0] = mRed;
+    red_grad.colors[1] = mOrange;
+    red_grad.colors[2] = mRed;
+    red_grad.colors[3] = mYellow;
+    red_grad.colors[4] = mRed;
+    red_grad.colors[5] = mYellow;
+    red_grad.colors[6] = mMaroon;
+    red_grad.colors[7] = mOrange;
 
     int count = 0;
     for (;;) {
@@ -109,17 +138,22 @@ void setup() {
             switch (current_gradient) {
             case CurrentGrad::BLUE:
                 for (int i = 0; i < NUMLEDS; i++) {
-                    strip.leds[i] = blue_orange_grad.get(inoise8(i * 50, count), 255);
+                    strip.leds[i] = blue_grad.get(inoise8(i * 50, count), 255);
                 }
                 break;
             case CurrentGrad::RED:
                 for (int i = 0; i < NUMLEDS; i++) {
-                    strip.leds[i] = red_orange_grad.get(inoise8(i * 50, count), 255);
+                    strip.leds[i] = red_grad.get(inoise8(i * 50, count), 255);
                 }
                 break;
             case CurrentGrad::GREEN:
                 for (int i = 0; i < NUMLEDS; i++) {
-                    strip.leds[i] = red_green_grad.get(inoise8(i * 50, count), 255);
+                    strip.leds[i] = green_grad.get(inoise8(i * 50, count), 255);
+                }
+                break;
+            case CurrentGrad::YELLOW:
+                for (int i = 0; i < NUMLEDS; i++) {
+                    strip.leds[i] = yellow_grad.get(inoise8(i * 50, count), 255);
                 }
                 break;
 
@@ -135,20 +169,38 @@ void setup() {
             IrReceiver.resume();
             switch (IrReceiver.decodedIRData.command) {
 
+            case BTN_OK:
+                if (repeat_flag()) {
+                    // ignore if repeat flag is set
+                    break;
+                }
+                if(lamps_active) {
+                    lamps_off();
+                    lamps_active = false;
+                } else {
+                    lamps_on();
+                    lamps_active = true;
+                }
+                break;
+
             case BTN_RED:
                 current_gradient = CurrentGrad::RED;
+                count_increment = 30;
                 break;
 
             case BTN_GREEN:
                 current_gradient = CurrentGrad::GREEN;
+                count_increment = 5;
                 break;
 
             case BTN_BLUE:
                 current_gradient = CurrentGrad::BLUE;
+                count_increment = 5;
                 break;
 
             case BTN_YELLOW:
                 current_gradient = CurrentGrad::YELLOW;
+                count_increment = 5;
                 break;
 
             case BTN_CH_PLUS:
@@ -168,7 +220,7 @@ void setup() {
                 break;
 
             case BTN_POWER:
-                if(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) {
+                if (repeat_flag()) {
                     // ignore if repeat flag is set
                     break;
                 }
@@ -176,9 +228,13 @@ void setup() {
                     // we are powered up, need to shut down
                     last_saved_target_brightness = target_brightness;
                     target_brightness = 0;
+                    lamps_off();
                 } else {
                     // we are shut down, need to power up
                     target_brightness = last_saved_target_brightness;
+                    if(lamps_active) {
+                        lamps_on();
+                    }
                 }
                 // Debounce
                 delay(500);
