@@ -201,6 +201,19 @@ void lamps_off() {
     digitalWrite(LAMP_PIN, LOW);
 }
 
+void toggle_lamps(bool &lamps_active) {
+    if (repeat_flag()) {
+        return;
+    }
+    if (lamps_active) {
+        lamps_off();
+        lamps_active = false;
+    } else {
+        lamps_on();
+        lamps_active = true;
+    }
+}
+
 void setup() {
     pinMode(LAMP_PIN, OUTPUT);
     lamps_off();
@@ -311,6 +324,9 @@ void setup() {
                         custom_grad_currently_selected_color = mAqua;
                         break;
 
+                    case BTN_OK:
+                        toggle_lamps(lamps_active);
+                        break;
 
                     case BTN_UP:
                         switch (custom_grad_currently_selected_color_fraction) {
@@ -339,7 +355,6 @@ void setup() {
                         }
                         break;
 
-
                     case BTN_RIGHT:
                         hsvOffset(custom_grad_currently_selected_color, 0.007, 0, 0);
                         break;
@@ -361,7 +376,6 @@ void setup() {
                         hsvOffset(custom_grad_currently_selected_color, 0, 0, -0.011);
                         break;
 
-
                     case BTN_RED:
                         custom_grad_currently_selected_color_fraction = BaseColor::R;
                         break;
@@ -371,7 +385,6 @@ void setup() {
                     case BTN_BLUE:
                         custom_grad_currently_selected_color_fraction = BaseColor::B;
                         break;
-
 
                     case BTN_SOURCE:
                         custom_grad.addOrSetColor(custom_grad_currently_selected_color, custom_grad_currently_selected_color_slot);
@@ -404,6 +417,11 @@ void setup() {
                 case BTN_9:
                     custom_grad_currently_selected_color_slot = IrReceiver.decodedIRData.command;
                     break;
+
+                case BTN_OK:
+                    toggle_lamps(lamps_active);
+                    break;
+
                 case BTN_HOLD:
                     custom_grad_editor_active = false;
                     custom_grad.save_to_eeprom();
@@ -496,17 +514,7 @@ void setup() {
                 break;
 
             case BTN_OK:
-                if (repeat_flag()) {
-                    // ignore if repeat flag is set
-                    break;
-                }
-                if (lamps_active) {
-                    lamps_off();
-                    lamps_active = false;
-                } else {
-                    lamps_on();
-                    lamps_active = true;
-                }
+                toggle_lamps(lamps_active);
                 break;
 
             case BTN_RED:
