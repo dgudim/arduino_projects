@@ -328,7 +328,7 @@ void setup() {
                     case BTN_DOWN:
                         switch (custom_grad_currently_selected_color_fraction) {
                         case BaseColor::R:
-                            custom_grad_currently_selected_color.r = constrain(custom_grad_currently_selected_color.r + 5, 0, 255);
+                            custom_grad_currently_selected_color.r = constrain(custom_grad_currently_selected_color.r - 5, 0, 255);
                             break;
                         case BaseColor::G:
                             custom_grad_currently_selected_color.g = constrain(custom_grad_currently_selected_color.g - 5, 0, 255);
