@@ -1,0 +1,15 @@
+[Unit]
+Description=Co2 monitoring daemon
+After=multi-user.target
+
+[Service]
+WorkingDirectory=/srv/co2
+Type=simple
+ExecStart=/usr/bin/co2mond -D ./hist > /dev/null
+StandardOutput=append:/dev/null
+Restart=always
+RemainAfterExit=yes
+RestartSec=3
+
+[Install]
+WantedBy=default.target
