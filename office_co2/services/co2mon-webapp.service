@@ -1,0 +1,15 @@
+[Unit]
+Description=Co2 monitoring daemon (web app)
+After=multi-user.target network.target co2mon-history-append.service
+Requires=co2mon-history-append.service
+
+[Service]
+WorkingDirectory=/srv/co2
+Type=simple
+ExecStart=/srv/co2/venv/bin/streamlit run app.py
+Restart=always
+RemainAfterExit=yes
+RestartSec=3
+
+[Install]
+WantedBy=default.target

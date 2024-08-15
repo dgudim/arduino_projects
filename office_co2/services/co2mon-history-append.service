@@ -1,0 +1,15 @@
+[Unit]
+Description=Co2 monitoring daemon (history appender)
+After=multi-user.target co2mon-daemon.service
+Requires=co2mon-daemon.service
+
+[Service]
+WorkingDirectory=/srv/co2/hist
+Type=simple
+ExecStart=/bin/bash ./history.sh
+Restart=always
+RemainAfterExit=yes
+RestartSec=3
+
+[Install]
+WantedBy=default.target
