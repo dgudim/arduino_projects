@@ -47,6 +47,9 @@ spacing = int(
     ((to_sec_unix(datetuple[1]) - to_sec_unix(datetuple[0])) / ONE_DAY_S) / 30 + 1
 )  # every month, the scaling increases by 1
 
+smoothing_range = st.slider(
+    "Smoothing range (samples)", min_value=1, max_value=100, value=25
+)
 
 cursor = db.cursor()
 cursor.execute(
@@ -59,12 +62,17 @@ cursor.execute(
 )
 temp_df = pd.DataFrame(cast(list[tuple[int, int]], cursor.fetchall()))
 
-def make_chart(df: pd.DataFrame, data_range: list[int], main_col: str, line_col: str, rolling_mean_col: str):
+
+def make_chart(
+    df: pd.DataFrame,
+    data_range: list[int],
+    main_col: str,
+    line_col: str,
+    rolling_mean_col: str,
+):
     transformed_data = pd.DataFrame(
         {
-            "time": df[df.columns[1]].map(
-                datetime.fromtimestamp, na_action="ignore"
-            ),
+            "time": df[df.columns[1]].map(datetime.fromtimestamp, na_action="ignore"),
             "data": df[df.columns[0]],
         }
     )
@@ -85,20 +93,23 @@ def make_chart(df: pd.DataFrame, data_range: list[int], main_col: str, line_col:
         .encode(y="mean(data):Q", size=alt.SizeValue(3))
     )
 
-    rolling_mean= (
+    rolling_mean = (
         alt.Chart()
         .mark_line(color=rolling_mean_col)
         .transform_window(
             # The field to average
             rolling_mean="mean(data)",
             # The number of values before and after the current value to include.
-            frame=[-9, 0],
+            frame=[-smoothing_range, smoothing_range],
         )
         .encode(x="time:T", y="rolling_mean:Q")
     )
 
     st.altair_chart(
-        cast(alt.Chart, alt.layer(main_chart, mean_line, rolling_mean, data=transformed_data)),
+        cast(
+            alt.Chart,
+            alt.layer(main_chart, mean_line, rolling_mean, data=transformed_data),
+        ),
         use_container_width=True,
     )
 
@@ -107,10 +118,10 @@ st.subheader("Temperature history")
 if len(temp_df) == 0:
     st.write("No temperature history for selected period")
 else:
-    make_chart(temp_df, [20, 30], "#FF5500", "#b22222", "#ffc261")
+    make_chart(temp_df, [20, 30], "#882d00", "#b22222", "#ffc261")
 
 st.subheader("Co2 history")
 if len(co2_df) == 0:
     st.write("No co2 history for selected period")
 else:
-    make_chart(co2_df, [300, 900], "#2255FF", "#008080", "#65f0cd")
+    make_chart(co2_df, [300, 900], "#112a7d", "#008080", "#65f0cd")
