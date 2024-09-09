@@ -8,6 +8,9 @@ import apsw.bestpractice
 import apsw.ext
 import pandas as pd
 import streamlit as st
+from streamlit_theme import st_theme
+
+theme_raw = st_theme()
 
 ONE_DAY_S = 86400
 
@@ -115,13 +118,21 @@ def make_chart(
 
 
 st.subheader("Temperature history")
+theme = theme_raw["base"] if theme_raw else ""
+
 if len(temp_df) == 0:
     st.write("No temperature history for selected period")
 else:
-    make_chart(temp_df, [20, 30], "#882d00", "#b22222", "#ffc261")
+    if theme == "dark":
+        make_chart(temp_df, [20, 30], "#882d00", "#b22222", "#ffc261")
+    else:
+        make_chart(temp_df, [20, 30], "#ffb895", "#ff9191", "#ac6900")
 
 st.subheader("Co2 history")
 if len(co2_df) == 0:
     st.write("No co2 history for selected period")
 else:
-    make_chart(co2_df, [300, 900], "#112a7d", "#008080", "#65f0cd")
+    if theme == "dark":
+        make_chart(co2_df, [300, 900], "#112a7d", "#008080", "#65f0cd")
+    else:
+        make_chart(co2_df, [300, 900], "#aebef5", "#c0ffff", "#007759")
