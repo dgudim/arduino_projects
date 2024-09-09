@@ -48,7 +48,7 @@ spacing = int(
 )  # every month, the scaling increases by 1
 
 smoothing_range = st.slider(
-    "Smoothing range (samples)", min_value=1, max_value=100, value=25
+    "Smoothing range (samples)", min_value=1, max_value=300, value=25
 )
 
 cursor = db.cursor()
