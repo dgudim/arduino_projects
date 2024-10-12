@@ -47,8 +47,8 @@ else:
     datetuple = cast(tuple[date, date], datetuple_raw)
 
 spacing = int(
-    ((to_sec_unix(datetuple[1]) - to_sec_unix(datetuple[0])) / ONE_DAY_S) / 30 + 1
-)  # every month, the scaling increases by 1
+    ((to_sec_unix(datetuple[1]) - to_sec_unix(datetuple[0])) / ONE_DAY_S) / 8 + 1
+)  # every week, the scaling increases by 1
 
 smoothing_range = st.slider(
     "Smoothing range (samples)", min_value=1, max_value=300, value=25
