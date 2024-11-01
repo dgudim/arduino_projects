@@ -164,7 +164,7 @@ float mix(float a, float b, float t) { return a + (b - a) * t; }
 
 float step(float e, float x) { return x < e ? 0.0 : 1.0; }
 
-void hsvOffset(mData &col, float h_offset, float s_offset, float v_offset) {
+mData hsvOffset(mData col, float h_offset, float s_offset, float v_offset) {
 
     float r = col.r / 255.0;
     float g = col.g / 255.0;
@@ -188,10 +188,12 @@ void hsvOffset(mData &col, float h_offset, float s_offset, float v_offset) {
     col.r = constrain(v_ * mix(1.0, constrain(abs(fract(h_ + 1.0) * 6.0 - 3.0) - 1.0, 0.0, 1.0), s_) * 255, 0, 255);
     col.g = constrain(v_ * mix(1.0, constrain(abs(fract(h_ + 0.6666666) * 6.0 - 3.0) - 1.0, 0.0, 1.0), s_) * 255, 0, 255);
     col.b = constrain(v_ * mix(1.0, constrain(abs(fract(h_ + 0.3333333) * 6.0 - 3.0) - 1.0, 0.0, 1.0), s_) * 255, 0, 255);
+
+    return col;
 }
 
 void play_on_anim() {
-    int color = mRed;
+    mData color = mRed;
 
     fillWithColor(mBlack);
     strip.setBrightness(0);
@@ -201,35 +203,38 @@ void play_on_anim() {
         int right_target_start = half_point + i;
         int left_target_start = half_point - i - 1;
 
-        int left_target_end = min(left_target_start - 15, 0);
-        int right_target_end = max(right_target_start + 15, NUMLEDS);
+        int left_target_end = constrain(left_target_start - 15, 0, NUMLEDS - 1);
+        int right_target_end = constrain(right_target_start + 15, 0, NUMLEDS - 1);
 
         for (int fill = left_target_start + 1; i < right_target_start; i++) {
-            strip.leds[i] = color;
+            strip.leds[fill] = color;
         }
 
         for (int grad = left_target_end; grad <= left_target_start; grad++) {
             float value = (grad - left_target_end) / 15.0f;
-            strip.leds[grad] = color * value;
+            strip.leds[grad] = getFade(color, value) hsvOffset(color, 0, value / 2.0f, -value);
         }
 
         for (int grad = right_target_start; grad <= right_target_end; grad++) {
-            float value = (15.0f - (grad - right_target_start)) / 15.0f;
-            strip.leds[grad] = color * value;
+            float value = (grad - right_target_start) / 15.0f;
+            strip.leds[grad] = hsvOffset(color, 0, value / 2.0f, value - 1);
         }
 
-        strip.setBrightness(((i + 1) * brightness / half_point));
+        // strip.setBrightness(((i + 1) / (float)half_point) * brightness);
 
-        delay(i * i / 60 + 10);
+        delay(100);
+        strip.show();
+        fillWithColor(mPurple);
+        delay(500);
+        fillWithColor(mBlue);
     }
 
-    fillWithColor(color);
     strip.setBrightness(brightness);
 
     for (int i = 0; i <= 500; i++) {
         float inverted = 500.0f - i;
-        fillWithColor(color * inverted / 500);
-        delay(inverted * inverted / 2300 + 10);
+        fillWithColor(getFade(color, i / 500.0f * 255));
+        delay(inverted * inverted / 10000.0f + 10);
     }
 
     fillWithColor(mBlack);
@@ -238,7 +243,8 @@ void play_on_anim() {
 void play_off_anim() {
     for (int i = 0; i <= brightness; i++) {
         strip.setBrightness(brightness - i);
-        delay((brightness - i) * (brightness - i) / 350 + 10);
+        delay(15);
+        strip.show();
     }
     fillWithColor(mBlack);
     strip.setBrightness(0);
@@ -270,14 +276,16 @@ void setup() {
     red_grad.colors[0] = grad_color1;
     red_grad.colors[1] = grad_color2;
 
+    static_color = mBlue;
+
     pinMode(MIC_PIN, INPUT);
     pinMode(STRIP_POWER_PIN, OUTPUT);
-    pinMode(STRIP_PIN, OUTPUT);
+    pinMode(STRIP_PIN, INPUT); // Off at start
     pinMode(IR_RECEIVE_PIN, OUTPUT);
 
     IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
 
-    delay(3000);
+    delay(5000);
     turn_on();
 }
 
@@ -315,6 +323,7 @@ void handle_control_events() {
                 // ignore if repeat flag is set
                 break;
             }
+            fillWithColor(mPurple);
             if (powered) {
                 turn_off();
             } else {
@@ -339,7 +348,7 @@ void handle_control_events() {
                 // ignore if repeat flag is set
                 break;
             }
-            mode = static_cast<Effect>(constrain(static_cast<int>(mode) + 1, 0, Effect::LAST));
+            mode = static_cast<Effect>(constrain(static_cast<int>(mode) + 1, Effect::FIRST, Effect::LAST));
             if (mode == Effect::LAST) {
                 mode = static_cast<Effect>(static_cast<int>(Effect::FIRST) + 1);
             }
@@ -352,7 +361,7 @@ void handle_control_events() {
                 // ignore if repeat flag is set
                 break;
             }
-            mode = static_cast<Effect>(constrain(static_cast<int>(mode) - 1, 0, Effect::FIRST));
+            mode = static_cast<Effect>(constrain(static_cast<int>(mode) - 1, Effect::FIRST, Effect::LAST));
             if (mode == Effect::FIRST) {
                 mode = static_cast<Effect>(static_cast<int>(Effect::LAST) - 1);
             }
@@ -385,11 +394,11 @@ void handle_control_events() {
             switch (mode) {
 
             case Effect::STATIC:
-                hsvOffset(static_color, 0.007, 0, 0);
+                static_color = hsvOffset(static_color, 0.007, 0, 0);
                 break;
 
             case Effect::GRADIENT:
-                hsvOffset(grad_color1, 0.007, 0, 0);
+                grad_color1 = hsvOffset(grad_color1, 0.007, 0, 0);
                 break;
 
             case Effect::FIRE:
@@ -406,11 +415,11 @@ void handle_control_events() {
             switch (mode) {
 
             case Effect::STATIC:
-                hsvOffset(static_color, 0, -0.01, 0);
+                static_color = hsvOffset(static_color, 0, -0.01, 0);
                 break;
 
             case Effect::GRADIENT:
-                hsvOffset(grad_color2, -0.007, 0, 0);
+                grad_color2 = hsvOffset(grad_color2, -0.007, 0, 0);
                 break;
 
             case Effect::FIRE:
@@ -427,11 +436,11 @@ void handle_control_events() {
             switch (mode) {
 
             case Effect::STATIC:
-                hsvOffset(static_color, 0, 0.01, 0);
+                static_color = hsvOffset(static_color, 0, 0.01, 0);
                 break;
 
             case Effect::GRADIENT:
-                hsvOffset(grad_color2, 0.007, 0, 0);
+                grad_color2 = hsvOffset(grad_color2, 0.007, 0, 0);
                 break;
 
             case Effect::FIRE:
