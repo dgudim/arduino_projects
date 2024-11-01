@@ -256,6 +256,7 @@ void play_off_anim() {
     }
     fillWithColor(mBlack);
     strip.setBrightness(0);
+    current_brightness = 0;
 }
 
 void turn_off() {
@@ -306,7 +307,7 @@ void display_effect() {
         break;
     case Effect::GRADIENT:
         for (int i = 0; i < NUMLEDS; i++) {
-            strip.leds[i] = red_grad.get(inoise8(i, loop_count), 255);
+            strip.leds[i] = red_grad.get(inoise8(i * 2, loop_count), 255);
         }
         break;
     case Effect::MUSIC:
@@ -323,15 +324,15 @@ void display_effect() {
         int val_shift = 0;
         int sat_shift = 0;
 
-        if (sound_level > sound_ceil / 2.0f) {
-            val_shift = 0.7;
-        }
+        // if (sound_level > sound_ceil / 2.0f) {
+        //     val_shift = 0.7;
+        // }
 
-        if (sound_level > sound_ceil / 1.5f) {
-            sat_shift = 0.3;
-        }
+        // if (sound_level > sound_ceil / 1.5f) {
+        //     sat_shift = 0.3;
+        // }
 
-        strip.leds[NUMLEDS + 1] = hsvOffset(mPurple, sound_level / sound_ceil, sat_shift, val_shift);
+        strip.leds[NUMLEDS - 1] = hsvOffset(mPurple, (sound_level / 300) * (sound_level / 300), sat_shift, val_shift);
 
         for (int i = 0; i < NUMLEDS - 1; i++) {
             strip.leds[i] = strip.leds[i + 1];
@@ -411,6 +412,7 @@ void handle_control_events() {
 
             case Effect::GRADIENT:
                 hsvOffset(grad_color1, -0.007, 0, 0);
+                red_grad.colors[0] = grad_color1;
                 break;
 
             case Effect::FIRE:
@@ -432,6 +434,7 @@ void handle_control_events() {
 
             case Effect::GRADIENT:
                 grad_color1 = hsvOffset(grad_color1, 0.007, 0, 0);
+                red_grad.colors[0] = grad_color1;
                 break;
 
             case Effect::FIRE:
@@ -453,6 +456,7 @@ void handle_control_events() {
 
             case Effect::GRADIENT:
                 grad_color2 = hsvOffset(grad_color2, -0.007, 0, 0);
+                red_grad.colors[1] = grad_color2;
                 break;
 
             case Effect::FIRE:
@@ -474,6 +478,7 @@ void handle_control_events() {
 
             case Effect::GRADIENT:
                 grad_color2 = hsvOffset(grad_color2, 0.007, 0, 0);
+                red_grad.colors[1] = grad_color2;
                 break;
 
             case Effect::FIRE:
@@ -504,35 +509,39 @@ void loop() {
 
             fillWithColor(mRed);
 
-            for (int i = 0; i < 50000; i++) {
+            for (int i = 0; i < 30000; i++) {
                 noise_floor = noise_floor * 0.7 + analogRead(MIC_PIN) * 0.3;
             }
 
             fillWithColor(mPurple);
             delay(5000);
-            fillWithColor(mLime);
+            // fillWithColor(mLime);
 
-            sound_ceil = 0;
-            for (int i = 0; i < 50000; i++) {
-                sound_ceil = sound_ceil * 0.7 + analogRead(MIC_PIN) * 0.3;
-            }
+            // sound_ceil = 0;
+            // for (int i = 0; i < 30000; i++) {
+            //     sound_ceil = sound_ceil * 0.7 + analogRead(MIC_PIN) * 0.3;
+            // }
 
-            if (sound_ceil - noise_floor < 10) {
-                fillWithColor(mRed);
-                delay(200);
-                fillWithColor(mRed);
-                delay(200);
-                fillWithColor(mRed);
-                delay(200);
-                fillWithColor(mRed);
-                delay(200);
-                mode = prev_effect;
-            } else {
-                fillWithColor(mGreen);
-                delay(200);
-                fillWithColor(mGreen);
-                delay(200);
-            }
+            // if (sound_ceil - noise_floor < 10) {
+            //     fillWithColor(mRed);
+            //     delay(1000);
+            //     fillWithColor(mBlack);
+            //     delay(1000);
+            //     fillWithColor(mRed);
+            //     delay(1000);
+            //     fillWithColor(mBlack);
+            //     delay(1000);
+            //     mode = prev_effect;
+            // } else {
+            //     fillWithColor(mGreen);
+            //     delay(1000);
+            //     fillWithColor(mBlack);
+            //     delay(1000);
+            //     fillWithColor(mGreen);
+            //     delay(1000);
+            //     fillWithColor(mBlack);
+            //     delay(1000);
+            // }
         }
         if (powered) {
             if (target_brightness != current_brightness) {
