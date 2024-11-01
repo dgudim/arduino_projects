@@ -8,7 +8,7 @@
 #define NUMLEDS 186 // кол-во светодиодов
 
 #include <microLED.h>
-microLED<NUMLEDS, STRIP_PIN, MLED_NO_CLOCK, LED_WS2815, ORDER_GRB, CLI_AVER> strip;
+microLED<NUMLEDS, STRIP_PIN, MLED_NO_CLOCK, LED_WS2812, ORDER_GRB, CLI_AVER> strip;
 #include <FastLEDsupport.h> // нужна для шума
 
 #define BTN_POWER 23
@@ -77,7 +77,8 @@ enum Effect {
     STATIC = 0,
     FIRE = 1,
     GRADIENT = 2,
-    LAST = 3,
+    MUSIC = 3,
+    LAST = 4,
 };
 
 mData static_color;
@@ -88,13 +89,19 @@ int fire_sparking = 120;
 mData grad_color1 = mRed;
 mData grad_color2 = mOrange;
 
-int brightness = 210;
-int speed_delay = 15;
+int target_brightness = 210;
+int current_brightness = 0;
+
+int speed_delay = 10;
 bool powered = false;
 Effect mode = Effect::STATIC;
 
 mGradient<2> red_grad;
 long loop_count = 0;
+
+float noise_floor = 0;
+float sound_ceil = 0;
+float sound_level = 0;
 
 #pragma region EFFECTS ----------------------------------------------------------------
 
@@ -114,6 +121,8 @@ void setPixelHeatColor(int pixel, byte temperature) {
     } else { // coolest
         strip.leds[pixel] = mRGB(heatramp, 0, 0);
     }
+    // Mirror
+    strip.leds[NUMLEDS - 1 - pixel] = strip.leds[pixel];
 }
 
 void fire(int cooling, int sparking) {
@@ -206,44 +215,43 @@ void play_on_anim() {
         int left_target_end = constrain(left_target_start - 15, 0, NUMLEDS - 1);
         int right_target_end = constrain(right_target_start + 15, 0, NUMLEDS - 1);
 
-        for (int fill = left_target_start + 1; i < right_target_start; i++) {
+        for (int fill = left_target_start + 1; fill < right_target_start; fill++) {
             strip.leds[fill] = color;
         }
 
         for (int grad = left_target_end; grad <= left_target_start; grad++) {
             float value = (grad - left_target_end) / 15.0f;
-            strip.leds[grad] = getFade(color, value) hsvOffset(color, 0, value / 2.0f, -value);
+            strip.leds[grad] = hsvOffset(color, value - 1, -value / 2.0f, -value);
         }
 
         for (int grad = right_target_start; grad <= right_target_end; grad++) {
             float value = (grad - right_target_start) / 15.0f;
-            strip.leds[grad] = hsvOffset(color, 0, value / 2.0f, value - 1);
+            strip.leds[grad] = hsvOffset(color, -value, (value - 1) / 2.0f, value - 1);
         }
 
-        // strip.setBrightness(((i + 1) / (float)half_point) * brightness);
+        strip.setBrightness(((i + 1) / (float)half_point) * target_brightness);
 
-        delay(100);
+        delay(10 + i * (i + 30) / NUMLEDS);
         strip.show();
-        fillWithColor(mPurple);
-        delay(500);
-        fillWithColor(mBlue);
     }
 
-    strip.setBrightness(brightness);
+    strip.setBrightness(target_brightness);
+    fillWithColor(color);
 
-    for (int i = 0; i <= 500; i++) {
-        float inverted = 500.0f - i;
-        fillWithColor(getFade(color, i / 500.0f * 255));
-        delay(inverted * inverted / 10000.0f + 10);
+    for (int i = 0; i <= 300; i++) {
+        float inverted = 300.0f - i;
+        fillWithColor(getFade(color, i / 300.0f * 255));
+        delay(inverted * inverted / 10000.0f + 3);
     }
 
     fillWithColor(mBlack);
+    strip.setBrightness(0);
 }
 
 void play_off_anim() {
-    for (int i = 0; i <= brightness; i++) {
-        strip.setBrightness(brightness - i);
-        delay(15);
+    for (int i = 0; i <= current_brightness; i++) {
+        strip.setBrightness(current_brightness - i);
+        delay(7);
         strip.show();
     }
     fillWithColor(mBlack);
@@ -271,12 +279,11 @@ void turn_on() {
 }
 
 void setup() {
-    // Serial.begin(112500);
 
     red_grad.colors[0] = grad_color1;
     red_grad.colors[1] = grad_color2;
 
-    static_color = mBlue;
+    static_color = mPurple;
 
     pinMode(MIC_PIN, INPUT);
     pinMode(STRIP_POWER_PIN, OUTPUT);
@@ -302,6 +309,35 @@ void display_effect() {
             strip.leds[i] = red_grad.get(inoise8(i, loop_count), 255);
         }
         break;
+    case Effect::MUSIC:
+
+        float min_ = 1000000;
+        float max_ = -1000000;
+        for (int i = 0; i < 100; i++) {
+            int value = analogRead(MIC_PIN);
+            min_ = min(min_, value - noise_floor);
+            max_ = max(max_, value - noise_floor);
+        }
+        sound_level = sound_level * 0.6 + (max_ - min_) * 0.4;
+
+        int val_shift = 0;
+        int sat_shift = 0;
+
+        if (sound_level > sound_ceil / 2.0f) {
+            val_shift = 0.7;
+        }
+
+        if (sound_level > sound_ceil / 1.5f) {
+            sat_shift = 0.3;
+        }
+
+        strip.leds[NUMLEDS + 1] = hsvOffset(mPurple, sound_level / sound_ceil, sat_shift, val_shift);
+
+        for (int i = 0; i < NUMLEDS - 1; i++) {
+            strip.leds[i] = strip.leds[i + 1];
+        }
+
+        break;
     default:
         break;
     }
@@ -323,7 +359,6 @@ void handle_control_events() {
                 // ignore if repeat flag is set
                 break;
             }
-            fillWithColor(mPurple);
             if (powered) {
                 turn_off();
             } else {
@@ -334,13 +369,11 @@ void handle_control_events() {
             break;
 
         case BTN_UP:
-            brightness = constrain(brightness + 5, 0, 230);
-            strip.setBrightness(brightness);
+            target_brightness = constrain(target_brightness + 5, 0, 230);
             break;
 
         case BTN_DOWN:
-            brightness = constrain(brightness - 5, 0, 230);
-            strip.setBrightness(brightness);
+            target_brightness = constrain(target_brightness - 5, 0, 230);
             break;
 
         case BTN_RIGHT:
@@ -404,7 +437,7 @@ void handle_control_events() {
             case Effect::FIRE:
                 fire_sparking = constrain(fire_sparking + 1, 0, 255);
                 // Debounce
-                delay(150);
+                delay(100);
                 break;
 
             default:
@@ -425,7 +458,7 @@ void handle_control_events() {
             case Effect::FIRE:
                 fire_cooling = constrain(fire_cooling - 1, 0, 255);
                 // Debounce
-                delay(150);
+                delay(100);
                 break;
 
             default:
@@ -446,7 +479,7 @@ void handle_control_events() {
             case Effect::FIRE:
                 fire_cooling = constrain(fire_cooling + 1, 0, 255);
                 // Debounce
-                delay(150);
+                delay(100);
                 break;
 
             default:
@@ -461,43 +494,52 @@ void handle_control_events() {
 
 void loop() {
 
+    Effect prev_effect = mode;
+
     while (true) {
+        prev_effect = mode;
         handle_control_events();
+        if (mode != prev_effect && mode == Effect::MUSIC) {
+            noise_floor = 0;
+
+            fillWithColor(mRed);
+
+            for (int i = 0; i < 50000; i++) {
+                noise_floor = noise_floor * 0.7 + analogRead(MIC_PIN) * 0.3;
+            }
+
+            fillWithColor(mPurple);
+            delay(5000);
+            fillWithColor(mLime);
+
+            sound_ceil = 0;
+            for (int i = 0; i < 50000; i++) {
+                sound_ceil = sound_ceil * 0.7 + analogRead(MIC_PIN) * 0.3;
+            }
+
+            if (sound_ceil - noise_floor < 10) {
+                fillWithColor(mRed);
+                delay(200);
+                fillWithColor(mRed);
+                delay(200);
+                fillWithColor(mRed);
+                delay(200);
+                fillWithColor(mRed);
+                delay(200);
+                mode = prev_effect;
+            } else {
+                fillWithColor(mGreen);
+                delay(200);
+                fillWithColor(mGreen);
+                delay(200);
+            }
+        }
         if (powered) {
+            if (target_brightness != current_brightness) {
+                current_brightness = (int)(current_brightness * 0.9 + target_brightness * 0.1);
+                strip.setBrightness(current_brightness);
+            }
             display_effect();
         }
     }
-
-    // float average = 0;
-    // float noise_floor = 0;
-
-    // for (int i = 0; i < 10000; i++) {
-    //     noise_floor = noise_floor * 0.7 + analogRead(A0) * 0.3;
-    // }
-
-    // Serial.print("noise_floor is");
-    // Serial.println(noise_floor);
-
-    // // while (true) {
-    // //     digitalWrite(5, HIGH);
-    // //     delay(3000);
-    // //     digitalWrite(5, LOW);
-    // //     delay(3000);
-    // // }
-
-    // while (true) {
-    //     float min_ = 1000000;
-    //     float max_ = -1000000;
-    //     for (int i = 0; i < 100; i++) {
-    //         int value = analogRead(A0);
-    //         min_ = min(min_, value - noise_floor);
-    //         max_ = max(max_, value - noise_floor);
-    //     }
-    //     average = average * 0.5 + (max_ - min_) * 0.5;
-    //     if(average > 65) {
-    //       fillWithColor(mWhite);
-    //     } else {
-    //       fillWithColor(mOrange);
-    //     }
-    // }
 }
