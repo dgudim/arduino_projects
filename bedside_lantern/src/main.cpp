@@ -134,6 +134,12 @@ class BreathingEffect {
 
 #pragma endregion
 
+float get_temp() {
+    float temp = 0;
+    temp_sensor_read_celsius(&temp);
+    return temp;
+}
+
 String html_processor(const String &var) {
     // Serial.println(var);
     if (var == "BAT_RAW") {
@@ -159,12 +165,6 @@ void init_temp_sensor() {
     temp_sensor.dac_offset = TSENS_DAC_L2; // TSENS_DAC_L2 is default; L4(-40°C ~ 20°C), L2(-10°C ~ 80°C), L1(20°C ~ 100°C), L0(50°C ~ 125°C)
     temp_sensor_set_config(temp_sensor);
     temp_sensor_start();
-}
-
-float get_temp() {
-    float temp = 0;
-    temp_sensor_read_celsius(&temp);
-    return temp;
 }
 
 void beep(int duration_ms, int delay_ms) {
@@ -233,7 +233,7 @@ void setup() {
     fill(CRGB::Green, true);
     delay(1500);
     FastLED.clear();
-
+ 
     init_temp_sensor();
 }
 
