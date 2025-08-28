@@ -1,23 +1,45 @@
-#include <Arduino.h>
-#include <FastLED.h>
-
-#define RGB_PACKED(R,G,B) (uint32_t)( ((R<<16) | ((G)<<8) | (B) ))
-#define UNPACK_R(P) (fl::u8)((P >> 16) & 0xFF)
-#define UNPACK_G(P) (fl::u8)((P >> 8) & 0xFF)
-#define UNPACK_B(P) (fl::u8)(P & 0xFF)
-
-// ========= HUB
-
 #define GH_INCLUDE_PORTAL
 #define GH_NO_MQTT
 #define GH_NO_STREAM
 
+#include <Arduino.h>
+
+#include <FastLED.h>
+
+#include <ESPmDNS.h>
 #include <GyverHub.h>
 
+#include <EncButton.h>
+#include <FileData.h>
+#include <LittleFS.h>
+
+constexpr uint32_t RGB_PACKED(const fl::u8 r, const fl::u8 g, const fl::u8 b) {
+    return (uint32_t)((r << 16) | (g << 8) | b);
+}
+
+constexpr fl::u8 UNPACK_R(uint32_t colr) {
+    return (colr >> 16) & 0xFF;
+}
+
+constexpr fl::u8 UNPACK_G(uint32_t colr) {
+    return (colr >> 8) & 0xFF;
+}
+
+constexpr fl::u8 UNPACK_B(uint32_t colr) {
+    return colr & 0xFF;
+}
+
+// ========= WIRELESS
+
 #define DEV_NAME "Snork"
-#define VERSION "0.1.3-nice"
+#define MDNS_DEV_NAME "snork"
+#define VERSION "0.1.4-nice"
 
 GyverHub hub(DEV_NAME, DEV_NAME, "f0eb"); // network name, имя устройства, иконка
+
+bool wifi_connected = false;
+
+// ========= UI
 
 String ui_input_ssid;
 String ui_input_password;
@@ -28,19 +50,13 @@ double ui_pot2_value = 0;
 double ui_pot3_value = 0;
 int ui_brightness_pot_value = 50;
 
-int ui_selected_color;
+uint32_t ui_selected_color;
 bool ui_current_effect_enabled = true;
 
 int ui_current_2d_effects_color_mode;
 bool ui_current_2d_effects_color_mode_is_inverted;
 int ui_current_2d_effects_brightness_mode;
 bool ui_current_2d_effects_brightness_mode_is_inverted;
-
-int ui_twinkle_backdrop_effect_color = ;
-
-// ========= GENERAL
-
-bool wifi_connected = false;
 
 // ========= HARDWARE
 
@@ -74,7 +90,6 @@ double brightness_pot_value = 0;
 int power_switch_value = 0;
 int current_power_state = PowerState::UNKNOWN;
 
-#include <EncButton.h>
 Button btn(button_pin);
 
 // ========= LED STRIP
@@ -118,7 +133,7 @@ const TProgmemRGBPalette16 FlatRainbowColors_p = {
 
 // ========= EFFECTS
 
-enum EffectMode {
+enum EffectMode : int {
     Static = 0,
     Twinkle = 1,
     Rainbow = 2,
@@ -131,7 +146,7 @@ enum EffectMode {
     Police = 9
 };
 
-enum _2DEffectType {
+enum _2DEffectType : int {
     RightDiagonal = 0,
     RightDiagonalBackwards = 2,
     LeftDiagonal = 1,
@@ -154,18 +169,42 @@ enum _2DEffectType {
 
 // ========= STORAGE
 
-#include <FileData.h>
-#include <LittleFS.h>
-
-struct FSData {
+struct WiFiFSData {
     char ssid[MAX_SSID_LEN + 1];
     char password[MAX_PASSPHRASE_LEN + 1];
+};
+WiFiFSData wifi_fsdata;
+FileData wifi_fsdata_handle(&LittleFS, "/wifi.dat", 'B', &wifi_fsdata, sizeof(wifi_fsdata));
+
+struct GeneralSettingsFSData {
     uint32_t chosen_ui_effects = 0xFFFFFFFF;
+    uint32_t var1_reserved = 0;
+    uint32_t var2_reserved = 0;
+    uint32_t var3_reserved = 0;
+    uint32_t var4_reserved = 0;
+};
+GeneralSettingsFSData general_fsdata;
+FileData general_fsdata_handle(&LittleFS, "/general.dat", 'B', &general_fsdata, sizeof(general_fsdata));
+
+struct _2DEffectsFSData {
     _2DEffectType _2d_effects_color_mode = _2DEffectType::LeftDiagonal;
     _2DEffectType _2d_effects_brightness_mode = _2DEffectType::Mixed1;
 };
-FSData fsdata;
-FileData fsdata_handle(&LittleFS, "/data.dat", 'B', &fsdata, sizeof(fsdata));
+_2DEffectsFSData _2d_effects_fsdata;
+FileData _2d_effects_fsdata_handle(&LittleFS, "/effect_settings/_2d.dat", 'B', &_2d_effects_fsdata, sizeof(_2d_effects_fsdata));
+
+struct TwinkleEffectFSData {
+    uint32_t twinkle_backdrop_effect_color = CRGB::Navy;
+    uint8_t twinkle_fadein_frames = 25;
+    uint8_t twinkle_fadeout_frames = 15;
+    double twinkle_fadeout_speed = 1.03;
+    double twinkle_fadein_speed = 0.05;
+};
+TwinkleEffectFSData twinkle_effect_fsdata;
+FileData twinkle_effect_fsdata_handle(&LittleFS, "/effect_settings/twinkle.dat", 'B', &twinkle_effect_fsdata, sizeof(twinkle_effect_fsdata));
+
+#define FILEDATAS_LEN 4
+FileData *filedatas[FILEDATAS_LEN] = {&wifi_fsdata_handle, &general_fsdata_handle, &_2d_effects_fsdata_handle, &twinkle_effect_fsdata_handle};
 
 // =========
 
@@ -182,24 +221,20 @@ void update_status_led(const CRGB &col) {
 }
 
 bool is_current_effect_enabled_in_manual_switch() {
-    return fsdata.chosen_ui_effects & (1 << current_mode);
+    return general_fsdata.chosen_ui_effects & (1 << current_mode);
 }
 
 void enable_current_effect_manual_switch() {
     if (is_current_effect_enabled_in_manual_switch() && ui_current_effect_enabled) {
         return;
     }
-    fsdata.chosen_ui_effects ^= (1 << current_mode);
-    fsdata_handle.update();
+    general_fsdata.chosen_ui_effects ^= (1 << current_mode);
+    wifi_fsdata_handle.update();
 }
 
-void init_fs() {
-    LittleFS.begin();
-
-    update_status_led(CRGB::SandyBrown); // Filesystem initialised
-
-    fsdata_handle.setTimeout(30000);
-    FDstat_t stat = fsdata_handle.read();
+void setup_file_in_fs(FileData &handle) {
+    handle.setTimeout(30000);
+    FDstat_t stat = wifi_fsdata_handle.read();
 
     switch (stat) {
     case FD_FS_ERR:
@@ -221,23 +256,43 @@ void init_fs() {
         delay(3000);
         break;
     }
+}
 
-    ui_input_ssid = fsdata.ssid;
-    ui_input_password = fsdata.password;
+void init_fs() {
+    LittleFS.begin();
 
-    ui_current_2d_effects_color_mode_is_inverted = fsdata._2d_effects_color_mode % 2 != 0;
-    ui_current_2d_effects_color_mode = floor(fsdata._2d_effects_color_mode / 2);
+    update_status_led(CRGB::SandyBrown); // Filesystem initialised
+    for (int i = 0; i < FILEDATAS_LEN; i++) {
+        setup_file_in_fs(*filedatas[i]);
+    }
 
-    ui_current_2d_effects_brightness_mode_is_inverted = fsdata._2d_effects_brightness_mode % 2 != 0;
-    ui_current_2d_effects_brightness_mode = floor(fsdata._2d_effects_brightness_mode / 2);
+    ui_input_ssid = wifi_fsdata.ssid;
+    ui_input_password = wifi_fsdata.password;
+
+    ui_current_2d_effects_color_mode_is_inverted = _2d_effects_fsdata._2d_effects_color_mode % 2 != 0;
+    ui_current_2d_effects_color_mode = floor(_2d_effects_fsdata._2d_effects_color_mode / 2);
+
+    ui_current_2d_effects_brightness_mode_is_inverted = _2d_effects_fsdata._2d_effects_brightness_mode % 2 != 0;
+    ui_current_2d_effects_brightness_mode = floor(_2d_effects_fsdata._2d_effects_brightness_mode / 2);
+}
+
+void save_to_fs(bool now) {
+    for (int i = 0; i < FILEDATAS_LEN; i++) {
+        if (now) {
+            filedatas[i]->updateNow();
+        } else {
+            filedatas[i]->update();
+        }
+    }
 }
 
 void try_connect_to_wifi() {
-    if (strlen(fsdata.ssid) > 1) {
+    wifi_connected = false;
+    if (strlen(wifi_fsdata.ssid) > 1) {
         update_status_led(CRGB::MediumPurple);
 
         WiFi.mode(WIFI_STA);
-        WiFi.begin(fsdata.ssid, fsdata.password);
+        WiFi.begin(wifi_fsdata.ssid, wifi_fsdata.password);
 
         int iteration = 0;
         while (WiFi.status() != WL_CONNECTED) {
@@ -254,6 +309,18 @@ void try_connect_to_wifi() {
         case WL_CONNECTED:
             update_status_led(CRGB::Green);
             wifi_connected = true;
+
+            if (!MDNS.begin(MDNS_DEV_NAME)) {
+                update_status_led(CRGB::Red);
+                update_status_led(CRGB::Orange);
+                update_status_led(CRGB::Red);
+            } else {
+                update_status_led(CRGB::Green4);
+                update_status_led(CRGB::Green3);
+                update_status_led(CRGB::Green2);
+                update_status_led(CRGB::Green1);
+            }
+
             break;
         case WL_CONNECT_FAILED:
         case WL_CONNECTION_LOST:
@@ -303,13 +370,13 @@ void build_ui(gh::Builder &b) {
 
         if (b.Button().label("Save").text("Save").icon("f1eb").click()) {
 
-            strcpy(fsdata.ssid, ui_input_ssid.c_str());
-            fsdata.ssid[strlen(ui_input_ssid.c_str())] = '\0';
+            strcpy(wifi_fsdata.ssid, ui_input_ssid.c_str());
+            wifi_fsdata.ssid[strlen(ui_input_ssid.c_str())] = '\0';
 
-            strcpy(fsdata.password, ui_input_password.c_str());
-            fsdata.password[strlen(ui_input_password.c_str())] = '\0';
+            strcpy(wifi_fsdata.password, ui_input_password.c_str());
+            wifi_fsdata.password[strlen(ui_input_password.c_str())] = '\0';
 
-            fsdata_handle.updateNow();
+            save_to_fs(true);
             try_connect_to_wifi();
         }
 
@@ -318,6 +385,7 @@ void build_ui(gh::Builder &b) {
 
         if (b.Select(&current_mode).text("Static;Twinkle;Rainbow;Rainbow2D;Forest2D;Lava2D;Ocean2D;Potassium2D;Party2D;Police").label("Mode").click()) {
             b.refresh();
+            save_to_fs(false);
         }
 
         {
@@ -377,8 +445,8 @@ void build_ui(gh::Builder &b) {
                 bool color_mode_dropdown = b.Switch(&ui_current_2d_effects_color_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
 
                 if (color_mode_dropdown || color_mode_inverted) {
-                    fsdata._2d_effects_color_mode = (_2DEffectType)(2 * ui_current_2d_effects_color_mode + ui_current_2d_effects_color_mode_is_inverted);
-                    fsdata_handle.update();
+                    _2d_effects_fsdata._2d_effects_color_mode = (_2DEffectType)(2 * ui_current_2d_effects_color_mode + ui_current_2d_effects_color_mode_is_inverted);
+                    save_to_fs(false);
                     b.refresh();
                 }
             }
@@ -388,11 +456,11 @@ void build_ui(gh::Builder &b) {
 
                 bool brightness_mode_inverted = b.Select(&ui_current_2d_effects_brightness_mode).text("RightDiagonal;LeftDiagonal;Up;Left;CenterOutward;Clockwise;SpiralClockwise;Mixed1;Mixed2").label("Brightness mode").click();
                 bool brightness_mode_dropdown = b.Switch(&ui_current_2d_effects_brightness_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
-                
+
                 if (brightness_mode_dropdown || brightness_mode_inverted) {
                     // Extend to full range and add offset (1) if the mode is mirrored
-                    fsdata._2d_effects_brightness_mode = (_2DEffectType)(2 * ui_current_2d_effects_brightness_mode + ui_current_2d_effects_brightness_mode_is_inverted);
-                    fsdata_handle.update();
+                    _2d_effects_fsdata._2d_effects_brightness_mode = (_2DEffectType)(2 * ui_current_2d_effects_brightness_mode + ui_current_2d_effects_brightness_mode_is_inverted);
+                    save_to_fs(false);
                     b.refresh();
                 }
             }
@@ -418,8 +486,23 @@ void build_ui(gh::Builder &b) {
             break;
         }
 
-        if(current_mode == EffectMode::Twinkle) {
-
+        if (current_mode == EffectMode::Twinkle) {
+            b.Label("Additional sparkle mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
+            if (b.Color(&twinkle_effect_fsdata.twinkle_backdrop_effect_color).click()) {
+                b.refresh();
+                save_to_fs(false);
+            }
+            {
+                gh::Row r(b);
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadein_frames).range(10, 40, 1).unit("").color(gh::Colors::Aqua).label("Fadein frames");
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadein_speed).range(0.01, 0.1, 0.01).unit("").color(gh::Colors::Violet).label("Fadein speed");
+            }
+            {
+                gh::Row r(b);
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_frames).range(10, 40, 1).unit("").color(gh::Colors::Orange).label("Fadeout frames");
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_speed).range(1.01, 1.1, 0.01).unit("").color(gh::Colors::Yellow).label("Fadeout speed");
+            }
+            b.Label().noTab().noLabel().disabled().size(1, 1);
         }
 
         if (ui_manual_mode) {
@@ -432,17 +515,27 @@ void build_ui(gh::Builder &b) {
         } else {
 
             if (color_selector_enabled) {
+                b.beginRow();
                 if (b.Color(&ui_selected_color).click()) {
-                    ui_pot1_value = ((ui_selected_color >> 16) & 0xFF) / 255.0;
-                    ui_pot2_value = ((ui_selected_color >> 8) & 0xFF) / 255.0;
-                    ui_pot3_value = (ui_selected_color & 0xFF) / 255.0;
+                    ui_pot1_value = UNPACK_R(ui_selected_color) / 255.0;
+                    ui_pot2_value = UNPACK_G(ui_selected_color) / 255.0;
+                    ui_pot3_value = UNPACK_B(ui_selected_color) / 255.0;
                     b.refresh();
                 }
+            }
+
+            if (color_selector_enabled) {
+                b.beginCol();
             }
 
             b.Slider(&ui_pot1_value).range(0, 1, 0.01).unit("").color(color1).label(label1);
             b.Slider(&ui_pot2_value).range(0, 1, 0.01).unit("").color(color2).label(label2);
             b.Slider(&ui_pot3_value).range(0, 1, 0.01).unit("").color(color3).label(label3);
+
+            if (color_selector_enabled) {
+                b.endCol();
+                b.endRow();
+            }
         }
 
         if (ui_manual_mode) {
@@ -607,9 +700,16 @@ fl::u8 get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
 
 void display_2d_palette(const TProgmemRGBPalette16 &pal, double color_speed, double brightness_speed, double saturation_offset) {
     for (int i = 0; i < NUM_LEDS; i++) {
-        fl::u8 color_phase = get_2d_palette_phase_offset(fsdata._2d_effects_color_mode, i);
-        fl::u8 brightness_phase = get_2d_palette_phase_offset(fsdata._2d_effects_brightness_mode, i);
-        leds[i] = hsv_offset(ColorFromPalette(pal, beatsin8(50 * color_speed, 0, 255, 0, color_phase), beatsin8(50 * brightness_speed, 35, 255, 0, brightness_phase)), 0, saturation_offset - 1, 0);
+        fl::u8 color_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_color_mode, i);
+        fl::u8 brightness_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_brightness_mode, i);
+
+        accum88 color_bpm = 30 * color_speed;
+        accum88 brightness_bpm = 30 * brightness_speed;
+
+        leds[i] = hsv_offset(ColorFromPalette(pal,
+                                              beatsin8(color_bpm, 0, 255, 0, color_phase + (color_bpm / 60) % 255),
+                                              beatsin8(brightness_bpm, 35, 255, 0, brightness_phase + (brightness_bpm / 60) % 255)),
+                             0, saturation_offset - 1, 0);
     }
 }
 
@@ -633,7 +733,7 @@ void single_sparkle(fl::u8 red, fl::u8 green, fl::u8 blue, int pixel_index) {
 }
 
 void twinkle(fl::u8 red, fl::u8 green, fl::u8 blue) {
-    if (sparkle_pos == -25) {
+    if (sparkle_pos == -twinkle_effect_fsdata.twinkle_fadein_frames) {
         for (int i = 0; i < NUM_LEDS; i++) {
             target_sparkle_frame[i] = CRGB::Black;
         }
@@ -644,7 +744,7 @@ void twinkle(fl::u8 red, fl::u8 green, fl::u8 blue) {
     }
 
     if (sparkle_pos <= 0) {
-        double fade_fract = 0.05;
+        double fade_fract = twinkle_effect_fsdata.twinkle_fadein_speed;
 
         for (int i = 0; i < NUM_LEDS; i++) {
             sparkle_current_frame[i].r = sparkle_current_frame[i].r * (1 - fade_fract) + target_sparkle_frame[i].r * fade_fract;
@@ -653,19 +753,19 @@ void twinkle(fl::u8 red, fl::u8 green, fl::u8 blue) {
         }
     } else {
 
-        double speed_mod = 1 + sparkle_pos / 100.0;
+        double speed_mod = twinkle_effect_fsdata.twinkle_fadeout_speed * (1 + sparkle_pos / 100.0);
 
         for (int i = 0; i < NUM_LEDS; i++) {
-            sparkle_current_frame[i].r /= 1.03 * speed_mod; // Exponential (double exponential?) fall-off, 1/4 faster at the end
-            sparkle_current_frame[i].g /= 1.03 * speed_mod;
-            sparkle_current_frame[i].b /= 1.03 * speed_mod;
+            sparkle_current_frame[i].r /= speed_mod; // Exponential (double exponential?) fall-off, 1/4 faster at the end
+            sparkle_current_frame[i].g /= speed_mod;
+            sparkle_current_frame[i].b /= speed_mod;
         }
     }
 
     sparkle_pos += 1;
 
-    if (sparkle_pos > 15) {
-        sparkle_pos = -25;
+    if (sparkle_pos > twinkle_effect_fsdata.twinkle_fadeout_frames) {
+        sparkle_pos = -twinkle_effect_fsdata.twinkle_fadein_frames;
         for (int i = 0; i < NUM_LEDS; ++i) {
             sparkle_current_frame[i] = CRGB::Black;
         }
@@ -758,7 +858,9 @@ void update_effects() {
 
 void loop() {
 
-    fsdata_handle.tick();
+    for (int i = 0; i < FILEDATAS_LEN; i++) {
+        filedatas[i]->tick();
+    }
     hub.tick();
     btn.tick();
 
