@@ -13,21 +13,26 @@
 #include <FileData.h>
 #include <LittleFS.h>
 
+#include <map>
 #include <set>
 
-constexpr uint32_t RGB_PACKED(const fl::u8 r, const fl::u8 g, const fl::u8 b) {
-    return (uint32_t)((r << 16) | (g << 8) | b);
+#define UINT16_MAX_HALF UINT16_MAX / 2
+
+void save_to_fs(bool);
+
+constexpr auto RGB_PACKED(const fl::u8 red, const fl::u8 green, const fl::u8 blue) -> uint32_t {
+    return static_cast<uint32_t>((red << 16) | (green << 8) | blue);
 }
 
-constexpr fl::u8 UNPACK_R(uint32_t colr) {
+constexpr auto UNPACK_R(uint32_t colr) -> fl::u8 {
     return (colr >> 16) & 0xFF;
 }
 
-constexpr fl::u8 UNPACK_G(uint32_t colr) {
+constexpr auto UNPACK_G(uint32_t colr) -> fl::u8 {
     return (colr >> 8) & 0xFF;
 }
 
-constexpr fl::u8 UNPACK_B(uint32_t colr) {
+constexpr auto UNPACK_B(uint32_t colr) -> fl::u8 {
     return colr & 0xFF;
 }
 
@@ -55,10 +60,13 @@ int ui_brightness_pot_value = 50;
 uint32_t ui_selected_color;
 bool ui_current_effect_enabled = true;
 
-int ui_current_2d_effects_color_mode;
-bool ui_current_2d_effects_color_mode_is_inverted;
-int ui_current_2d_effects_brightness_mode;
-bool ui_current_2d_effects_brightness_mode_is_inverted;
+int ui_2d_effects_color_mode;
+bool ui_2d_effects_color_mode_is_inverted;
+
+int ui_selected_custom_palette;
+int ui_current_loaded_custom_palette[16];
+
+double ui_shader1_attenuation_amount = 1.3;
 
 // ========= HARDWARE
 
@@ -83,6 +91,7 @@ const int button_led_pin = 9;
 
 #define BRIGHTNESS_POT_MAX_ADC_VALUE 4100
 
+#define ADC_MEDIAN_SAMPLES 15
 #define ADC_SMOOTHING 0.02
 
 double pot1_in_value = 0;
@@ -101,6 +110,8 @@ Button btn(button_pin);
 #define MAX_BRIGHT 35
 #define BRIGHTNESS_SMOOTHING 0.5
 
+#define WIDTH 256;
+#define HEIGHT 256;
 CRGB leds[NUM_LEDS];
 
 int brightness_level = 0;
@@ -112,41 +123,200 @@ const fl::u8 coordsY[NUM_LEDS] = {170, 172, 173, 174, 175, 176, 177, 177, 178, 1
 const fl::u8 angles[NUM_LEDS] = {222, 220, 219, 217, 216, 214, 212, 211, 209, 207, 206, 204, 202, 200, 198, 196, 195, 193, 191, 189, 187, 186, 184, 182, 181, 179, 177, 176, 175, 173, 172, 171, 169, 168, 167, 166, 165, 164, 163, 162, 161, 161, 160, 160, 159, 159, 159, 159, 159, 160, 160, 160, 160, 160, 160, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 161, 160, 159, 159, 158, 158, 157, 156, 156, 155, 155, 154, 153, 153, 152, 152, 151, 150, 150, 149, 149, 132, 132, 131, 131, 130, 130, 129, 129, 129, 129, 129, 129, 129, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 130, 130, 130, 130, 131, 131, 131, 132, 132, 132, 133, 133, 134, 135, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 145, 146, 146, 147, 147, 147, 148, 149, 150, 152, 153, 155, 159, 164, 171, 182, 195, 213, 227, 238, 245, 249, 252, 255, 1, 3, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 1, 0, 254, 254, 253, 253, 253, 252, 252, 251, 251, 250, 250, 249, 249, 248, 247, 246, 245, 244, 243, 242, 241, 239, 237, 235, 233, 231, 228, 225, 222, 218, 215, 211, 207, 203, 199, 195, 192, 188, 185, 181, 178, 175, 173, 171, 170, 170, 171, 171, 174, 176, 178, 180, 182, 184, 187, 189, 191, 194, 196, 198, 201, 204, 206, 209, 211, 214, 216, 218, 220, 222, 224, 226, 228, 229, 230, 232, 233, 234, 235, 235, 236, 237, 238, 239, 239, 240, 241, 241, 242, 242, 243, 243, 244, 244, 244, 244, 245, 245, 245, 245, 245, 245, 245, 244, 244, 243, 242, 242, 241, 240, 240, 240, 239, 239, 238, 238, 237, 237, 236, 236, 235, 235, 234, 233, 232, 231, 230, 230, 228, 227, 226, 225, 223, 222, 221, 219, 218, 217, 216, 214, 213, 212, 211, 210, 210, 209, 209, 210, 241, 240, 240, 239, 239, 239, 239, 239, 238, 238, 238, 238, 238, 237, 237, 237, 237, 237, 237, 236, 236, 236, 236, 236, 237, 237, 237, 237, 238, 238, 239, 239, 240, 240, 240, 241, 241, 241, 242, 242, 242, 243, 243, 244, 244, 245, 245, 246, 247, 247, 248, 249, 249, 250, 250, 251, 251, 252, 252, 253, 253, 254, 254, 255, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2, 1, 1, 0, 0, 255, 254, 254, 254, 253, 253, 252, 252, 251, 251, 250, 249, 249, 248, 248, 248, 248, 248, 248, 248, 249, 249, 249, 250, 250, 250, 250, 251, 251, 9, 10, 12, 13, 15, 18, 20, 23, 26, 30, 34, 38, 43, 47, 52, 56, 61, 65, 69, 72, 75, 77, 79, 80, 80, 80, 80, 79, 79, 79, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78, 77, 77, 78, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 90, 91, 92, 93, 95, 96, 97, 99, 100, 101, 103, 104, 105, 122, 123, 124, 124, 125, 125, 126, 126, 125, 125, 124, 124, 123, 123, 122, 122, 91, 93, 95, 96, 98, 99, 100, 101, 102, 103, 104, 104, 105, 106, 107, 107, 108, 109, 109, 110, 110, 111, 111, 112, 112, 113, 113, 114, 114, 115, 115, 115, 116, 116, 116, 117, 117, 117, 117, 118, 118, 118, 119, 119, 119, 119, 120, 120, 120, 120, 121, 121, 121, 122, 122, 122, 122, 123, 123, 123, 123, 124, 124, 124, 124, 124, 125, 125, 125, 125, 126, 126, 126, 126, 127, 127, 127, 128, 128, 128, 129, 129, 129, 130, 130, 130, 131, 131, 132, 132, 132, 133, 133, 133, 134, 134, 134, 134, 135, 135, 135, 135, 136, 136, 136, 136, 136, 136, 136, 135, 135, 135, 135, 135, 134, 134, 134, 134, 134, 133, 133, 133, 133, 133, 133, 133, 133, 133, 133, 133, 133, 133, 134, 134, 135, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 136, 137, 137, 138, 138, 139, 139, 140, 140, 140, 141, 141, 141, 142, 142, 143, 143, 143, 144, 144, 144, 145, 145, 145, 146, 146, 147, 147, 147, 148, 148, 149, 149, 149, 150, 150, 151, 151, 152, 152, 153, 154, 154, 155, 156};
 const fl::u8 radii[NUM_LEDS] = {75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 66, 65, 65, 65, 65, 65, 65, 65, 65, 66, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 79, 81, 83, 85, 87, 88, 90, 92, 94, 97, 99, 102, 104, 107, 110, 113, 116, 119, 122, 124, 127, 130, 133, 136, 139, 142, 145, 148, 150, 153, 156, 159, 162, 165, 168, 170, 173, 175, 174, 174, 173, 171, 170, 168, 166, 165, 163, 161, 159, 158, 156, 154, 152, 150, 148, 146, 144, 243, 244, 244, 245, 244, 242, 241, 239, 236, 234, 231, 228, 225, 222, 220, 217, 214, 211, 208, 205, 203, 200, 197, 194, 191, 188, 186, 183, 180, 177, 174, 171, 169, 166, 163, 160, 157, 154, 152, 149, 146, 143, 140, 138, 135, 132, 129, 126, 123, 120, 118, 115, 112, 109, 106, 104, 101, 98, 96, 93, 90, 87, 85, 82, 80, 77, 74, 72, 69, 67, 65, 62, 60, 58, 55, 52, 50, 47, 44, 42, 39, 36, 33, 30, 28, 25, 22, 19, 17, 14, 12, 10, 8, 7, 7, 8, 10, 12, 14, 17, 20, 22, 25, 28, 31, 33, 36, 39, 42, 45, 48, 50, 53, 56, 59, 62, 65, 68, 70, 73, 76, 79, 82, 84, 87, 90, 93, 96, 98, 100, 100, 99, 98, 95, 93, 90, 88, 85, 82, 79, 77, 74, 71, 69, 66, 63, 61, 58, 56, 53, 51, 48, 46, 44, 42, 40, 37, 35, 34, 33, 32, 31, 31, 30, 29, 29, 29, 30, 30, 31, 32, 33, 34, 36, 38, 40, 42, 45, 48, 50, 50, 51, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 43, 43, 44, 45, 45, 46, 47, 49, 50, 51, 53, 55, 56, 58, 60, 62, 65, 67, 70, 72, 74, 77, 79, 82, 84, 86, 89, 91, 94, 96, 99, 102, 104, 107, 110, 113, 115, 118, 121, 124, 127, 129, 132, 134, 136, 137, 137, 135, 133, 131, 128, 126, 123, 121, 119, 116, 113, 111, 108, 106, 103, 101, 99, 97, 95, 93, 91, 89, 88, 86, 85, 85, 85, 85, 86, 87, 88, 87, 87, 86, 85, 83, 82, 80, 77, 74, 72, 69, 139, 142, 144, 146, 149, 152, 155, 157, 160, 163, 165, 168, 171, 173, 176, 179, 181, 184, 187, 189, 192, 195, 198, 201, 203, 206, 208, 210, 211, 211, 209, 208, 206, 204, 201, 199, 197, 195, 192, 190, 188, 186, 184, 183, 181, 180, 180, 179, 179, 180, 181, 182, 183, 184, 185, 187, 188, 190, 191, 193, 195, 196, 198, 199, 200, 202, 204, 205, 208, 210, 211, 212, 214, 215, 216, 216, 217, 214, 211, 209, 206, 203, 201, 198, 196, 193, 191, 189, 186, 184, 181, 179, 177, 175, 173, 170, 168, 166, 163, 161, 158, 156, 154, 152, 149, 147, 145, 143, 141, 139, 137, 135, 133, 130, 128, 125, 122, 119, 117, 114, 111, 108, 106, 103, 100, 98, 95, 92, 44, 41, 39, 37, 35, 33, 31, 29, 28, 26, 25, 24, 24, 24, 24, 25, 25, 26, 27, 28, 30, 33, 35, 37, 40, 43, 46, 48, 51, 54, 56, 59, 62, 65, 67, 70, 73, 75, 78, 81, 84, 86, 89, 92, 94, 96, 96, 96, 96, 94, 93, 91, 90, 89, 87, 86, 86, 85, 84, 83, 83, 82, 82, 82, 81, 80, 79, 79, 181, 180, 180, 179, 177, 175, 174, 171, 168, 166, 166, 166, 166, 168, 171, 173, 43, 46, 48, 50, 53, 55, 57, 60, 62, 65, 67, 70, 73, 75, 77, 80, 82, 85, 87, 90, 93, 95, 98, 100, 103, 105, 108, 111, 113, 116, 118, 121, 124, 127, 129, 132, 135, 137, 140, 143, 145, 148, 150, 153, 156, 158, 161, 164, 166, 169, 172, 174, 177, 179, 182, 184, 187, 190, 192, 195, 197, 200, 203, 205, 208, 211, 213, 216, 218, 221, 223, 226, 228, 231, 233, 235, 238, 240, 242, 244, 246, 248, 250, 252, 253, 254, 255, 254, 254, 253, 251, 249, 247, 244, 242, 239, 237, 235, 232, 230, 228, 225, 223, 220, 217, 215, 212, 209, 206, 203, 201, 198, 195, 193, 190, 188, 185, 182, 180, 177, 174, 171, 168, 166, 163, 160, 157, 154, 151, 149, 146, 143, 141, 141, 141, 142, 145, 148, 151, 154, 156, 159, 162, 165, 168, 171, 173, 176, 179, 182, 185, 188, 190, 193, 196, 197, 199, 200, 199, 198, 197, 194, 192, 190, 187, 185, 183, 180, 178, 176, 173, 171, 169, 166, 164, 161, 159, 156, 154, 151, 149, 147, 144, 142, 139, 137, 134, 132, 129, 127, 125, 122, 120, 118, 116, 114, 111, 109};
 
-const TProgmemRGBPalette16 MagmaColor_p FL_PROGMEM = {CRGB::Black, 0x240000, 0x480000, 0x660000, 0x9a1100, 0xc32500, 0xd12a00, 0xe12f17, 0xf0350f, 0xff3c00, 0xff6400, 0xff8300, 0xffa000, 0xffba00, 0xffd400, 0xffffff};
-const TProgmemRGBPalette16 WoodFireColors_p FL_PROGMEM = {CRGB::Black, 0x330e00, 0x661c00, 0x992900, 0xcc3700, CRGB::OrangeRed, 0xff5800, 0xff6b00, 0xff7f00, 0xff9200, CRGB::Orange, 0xffaf00, 0xffb900, 0xffc300, 0xffcd00, CRGB::Gold};
-const TProgmemRGBPalette16 NormalFire_p FL_PROGMEM = {CRGB::Black, 0x330000, 0x660000, 0x990000, 0xcc0000, CRGB::Red, 0xff0c00, 0xff1800, 0xff2400, 0xff3000, 0xff3c00, 0xff4800, 0xff5400, 0xff6000, 0xff6c00, 0xff7800};
-const TProgmemRGBPalette16 NormalFire2_p FL_PROGMEM = {CRGB::Black, 0x560000, 0x6b0000, 0x820000, 0x9a0011, CRGB::FireBrick, 0xc22520, 0xd12a1c, 0xe12f17, 0xf0350f, 0xff3c00, 0xff6400, 0xff8300, 0xffa000, 0xffba00, 0xffd400};
-const TProgmemRGBPalette16 LithiumFireColors_p FL_PROGMEM = {CRGB::Black, 0x240707, 0x470e0e, 0x6b1414, 0x8e1b1b, CRGB::FireBrick, 0xc14244, 0xd16166, 0xe08187, 0xf0a0a9, CRGB::Pink, 0xff9ec0, 0xff7bb5, 0xff59a9, 0xff369e, CRGB::DeepPink};
-const TProgmemRGBPalette16 SodiumFireColors_p FL_PROGMEM = {CRGB::Black, 0x332100, 0x664200, 0x996300, 0xcc8400, CRGB::Orange, 0xffaf00, 0xffb900, 0xffc300, 0xffcd00, CRGB::Gold, 0xf8cd06, 0xf0c30d, 0xe9b913, 0xe1af1a, CRGB::Goldenrod};
-const TProgmemRGBPalette16 CopperFireColors_p FL_PROGMEM = {CRGB::Black, 0x001a00, 0x003300, 0x004d00, 0x006600, CRGB::Green, 0x239909, 0x45b313, 0x68cc1c, 0x8ae626, CRGB::GreenYellow, 0x94f530, 0x7ceb30, 0x63e131, 0x4bd731, CRGB::LimeGreen};
-const TProgmemRGBPalette16 AlcoholFireColors_p FL_PROGMEM = {CRGB::Black, 0x000033, 0x000066, 0x000099, 0x0000cc, CRGB::Blue, 0x0026ff, 0x004cff, 0x0073ff, 0x0099ff, CRGB::DeepSkyBlue, 0x1bc2fe, 0x36c5fd, 0x51c8fc, 0x6ccbfb, CRGB::LightSkyBlue};
-const TProgmemRGBPalette16 RubidiumFireColors_p FL_PROGMEM = {CRGB::Black, 0x0f001a, 0x1e0034, 0x2d004e, 0x3c0068, CRGB::Indigo, CRGB::Indigo, CRGB::Indigo, CRGB::Indigo, CRGB::Indigo, CRGB::Indigo, 0x3c0084, 0x2d0086, 0x1e0087, 0x0f0089, CRGB::DarkBlue};
-const TProgmemRGBPalette16 PotassiumFireColors_p FL_PROGMEM = {CRGB::Black, 0x0f001a, 0x1e0034, 0x2d004e, 0x3c0068, CRGB::Indigo, 0x591694, 0x682da6, 0x7643b7, 0x855ac9, CRGB::MediumPurple, 0xa95ecd, 0xbe4bbe, 0xd439b0, 0xe926a1, CRGB::DeepPink};
-const TProgmemRGBPalette16 FlatRainbowColors_p = {
-    0xFF0000,
-    0xAB5500,
-    0xABAB00,
-    0x00FF00,
-    0x00AB55,
-    0x0000FF,
-    0x5500AB,
-    0xAB0055,
-};
+// generated with this
+// #include <stdio.h>
+// #include <cstdint>
+// #include <iostream>
+
+// int main()
+// {
+//     for(int i = 0; i < NUM_LEDS; i++) {
+//         std::cout << '{' << (coordsX[i] << 8) + coordsY[i] << ", " << i << "},";
+//         if((i + 1) % 12 == 0) {
+//             std::cout << '\n';
+//         }
+//     }
+//     return 0;
+// }
+// clang-format off
+// const std::map<u16_t, u16_t> xyMap = {
+//     {22954, 0},{23212, 1},{23725, 2},{23982, 3},{24495, 4},{24752, 5},{25265, 6},{25777, 7},{26034, 8},{26546, 9},{26803, 10},{27315, 11},
+//     {27572, 12},{28085, 13},{28597, 14},{28854, 15},{29366, 16},{29623, 17},{30135, 18},{30648, 19},{30904, 20},{31417, 21},{31673, 22},{32185, 23},
+//     {32698, 24},{32954, 25},{33466, 26},{33722, 27},{34235, 28},{34747, 29},{35003, 30},{35516, 31},{35772, 32},{36285, 33},{36541, 34},{37053, 35},
+//     {37566, 36},{37822, 37},{38334, 38},{38590, 39},{39103, 40},{39616, 41},{39873, 42},{40386, 43},{40643, 44},{40902, 45},{41416, 46},{41675, 47},
+//     {41678, 48},{41937, 49},{42196, 50},{42454, 51},{42713, 52},{42972, 53},{43231, 54},{43490, 55},{43493, 56},{43752, 57},{44011, 58},{44270, 59},
+//     {44528, 60},{44787, 61},{45045, 62},{45304, 63},{45563, 64},{45821, 65},{46334, 66},{46591, 67},{47103, 68},{47356, 69},{47610, 70},{47606, 71},
+//     {47859, 72},{47855, 73},{47852, 74},{47849, 75},{47845, 76},{47842, 77},{47838, 78},{47835, 79},{47831, 80},{47828, 81},{47824, 82},{47821, 83},
+//     {47817, 84},{47558, 85},{47554, 86},{47551, 87},{63627, 88},{63879, 89},{63876, 90},{64129, 91},{63870, 92},{63610, 93},{63607, 94},{63094, 95},
+//     {62836, 96},{62578, 97},{62066, 98},{61809, 99},{61297, 100},{61040, 101},{60527, 102},{60271, 103},{59759, 104},{59503, 105},{58991, 106},{58478, 107},
+//     {58222, 108},{57710, 109},{57454, 110},{56942, 111},{56687, 112},{56175, 113},{55919, 114},{55407, 115},{55151, 116},{54639, 117},{54127, 118},{53870, 119},
+//     {53358, 120},{53102, 121},{52590, 122},{52334, 123},{51822, 124},{51567, 125},{51055, 126},{50800, 127},{50288, 128},{50032, 129},{49520, 130},{49264, 131},
+//     {48752, 132},{48240, 133},{47984, 134},{47472, 135},{47216, 136},{46704, 137},{46448, 138},{45936, 139},{45681, 140},{45169, 141},{44914, 142},{44402, 143},
+//     {43891, 144},{43635, 145},{43124, 146},{42869, 147},{42358, 148},{42102, 149},{41591, 150},{41336, 151},{40825, 152},{40570, 153},{40058, 154},{39803, 155},
+//     {39548, 156},{39038, 157},{38783, 158},{38272, 159},{38017, 160},{37505, 161},{37250, 162},{36738, 163},{36482, 164},{35969, 165},{35713, 166},{35200, 167},
+//     {34943, 168},{34430, 169},{34172, 170},{33659, 171},{33402, 172},{32889, 173},{32633, 174},{32120, 175},{31863, 176},{31350, 177},{31093, 178},{30580, 179},
+//     {30323, 180},{29810, 181},{29553, 182},{29040, 183},{28783, 184},{28270, 185},{28012, 186},{27755, 187},{27242, 188},{26985, 189},{26472, 190},{26215, 191},
+//     {25702, 192},{25445, 193},{24933, 194},{24676, 195},{24164, 196},{23907, 197},{23395, 198},{23138, 199},{22626, 200},{22113, 201},{21857, 202},{21344, 203},
+//     {21088, 204},{20575, 205},{20319, 206},{19807, 207},{19550, 208},{19038, 209},{18782, 210},{18270, 211},{18014, 212},{17502, 213},{16991, 214},{16736, 215},
+//     {16481, 216},{15971, 217},{16230, 218},{16233, 219},{16236, 220},{16749, 221},{17006, 222},{17519, 223},{17776, 224},{18289, 225},{18546, 226},{19058, 227},
+//     {19315, 228},{19828, 229},{20084, 230},{20597, 231},{20854, 232},{21367, 233},{21624, 234},{22137, 235},{22394, 236},{22906, 237},{23163, 238},{23676, 239},
+//     {23933, 240},{24446, 241},{24703, 242},{25216, 243},{25472, 244},{25985, 245},{26243, 246},{26500, 247},{27014, 248},{27271, 249},{27784, 250},{28041, 251},
+//     {28554, 252},{28811, 253},{29324, 254},{29581, 255},{30094, 256},{30350, 257},{30863, 258},{31120, 259},{31632, 260},{31889, 261},{32402, 262},{32659, 263},
+//     {32917, 264},{33176, 265},{33179, 266},{33438, 267},{32928, 268},{32674, 269},{32420, 270},{31908, 271},{31651, 272},{31139, 273},{30882, 274},{30370, 275},
+//     {30113, 276},{29599, 277},{29342, 278},{29084, 279},{28571, 280},{28315, 281},{27802, 282},{27290, 283},{27033, 284},{26521, 285},{26264, 286},{25751, 287},
+//     {25495, 288},{24982, 289},{24725, 290},{24212, 291},{23956, 292},{23443, 293},{23187, 294},{22674, 295},{22418, 296},{21906, 297},{21650, 298},{21137, 299},
+//     {20881, 300},{20369, 301},{20112, 302},{19600, 303},{19088, 304},{18831, 305},{18319, 306},{18062, 307},{17549, 308},{17293, 309},{16780, 310},{16524, 311},
+//     {16012, 312},{15756, 313},{15244, 314},{14988, 315},{14476, 316},{13965, 317},{13709, 318},{13197, 319},{12942, 320},{12688, 321},{12177, 322},{11923, 323},
+//     {11927, 324},{11674, 325},{11932, 326},{12190, 327},{12704, 328},{12961, 329},{13473, 330},{13729, 331},{14242, 332},{14498, 333},{15010, 334},{15267, 335},
+//     {15779, 336},{16035, 337},{16547, 338},{16803, 339},{17315, 340},{17827, 341},{18084, 342},{18341, 343},{18854, 344},{19367, 345},{19623, 346},{20136, 347},
+//     {20393, 348},{20651, 349},{21164, 350},{21423, 351},{21681, 352},{21940, 353},{22198, 354},{22457, 355},{22716, 356},{22974, 357},{23231, 358},{23744, 359},
+//     {24000, 360},{24512, 361},{24768, 362},{25023, 363},{25276, 364},{25786, 365},{25783, 366},{25779, 367},{11939, 368},{11686, 369},{11433, 370},{11179, 371},
+//     {10925, 372},{10671, 373},{10161, 374},{9907, 375},{9653, 376},{9399, 377},{9145, 378},{8635, 379},{8382, 380},{8128, 381},{7874, 382},{7620, 383},
+//     {7367, 384},{7113, 385},{6603, 386},{6349, 387},{6095, 388},{5840, 389},{5330, 390},{5075, 391},{4564, 392},{4309, 393},{4052, 394},{3538, 395},
+//     {3281, 396},{3278, 397},{3275, 398},{3272, 399},{3524, 400},{3778, 401},{3775, 402},{4028, 403},{4281, 404},{4535, 405},{4788, 406},{5041, 407},
+//     {5038, 408},{5292, 409},{5545, 410},{5541, 411},{5794, 412},{5791, 413},{5788, 414},{5784, 415},{5525, 416},{5522, 417},{5263, 418},{5004, 419},
+//     {4745, 420},{4743, 421},{4484, 422},{4225, 423},{3967, 424},{3708, 425},{3450, 426},{3191, 427},{2933, 428},{2674, 429},{2415, 430},{2156, 431},
+//     {2154, 432},{1895, 433},{1636, 434},{1378, 435},{1119, 436},{861, 437},{602, 438},{343, 439},{340, 440},{81, 441},{77, 442},{74, 443},
+//     {71, 444},{327, 445},{838, 446},{1093, 447},{1607, 448},{1864, 449},{2378, 450},{2636, 451},{2894, 452},{3152, 453},{3410, 454},{3924, 455},
+//     {4182, 456},{4440, 457},{4698, 458},{5211, 459},{5469, 460},{5728, 461},{5986, 462},{6244, 463},{6502, 464},{7016, 465},{7274, 466},{7531, 467},
+//     {8045, 468},{8302, 469},{8560, 470},{8818, 471},{9332, 472},{9590, 473},{9848, 474},{10106, 475},{10364, 476},{10878, 477},{11136, 478},{11394, 479},
+//     {11907, 480},{12165, 481},{12421, 482},{12932, 483},{13186, 484},{13697, 485},{13952, 486},{14463, 487},{14718, 488},{14972, 489},{15483, 490},{15737, 491},
+//     {15992, 492},{16503, 493},{16758, 494},{17269, 495},{23903, 496},{24414, 497},{24669, 498},{25180, 499},{25435, 500},{25946, 501},{26200, 502},{26455, 503},
+//     {26966, 504},{27221, 505},{27732, 506},{27987, 507},{28241, 508},{28752, 509},{29007, 510},{29261, 511},{29772, 512},{30027, 513},{30538, 514},{30793, 515},
+//     {31047, 516},{31301, 517},{31811, 518},{31809, 519},{32062, 520},{32315, 521},{32312, 522},{32565, 523},{32562, 524},{32559, 525},{32811, 526},{32808, 527},
+//     {32805, 528},{33058, 529},{33055, 530},{33308, 531},{33305, 532},{33558, 533},{33555, 534},{33808, 535},{33804, 536},{33801, 537},{34054, 538},{34308, 539},
+//     {34305, 540},{34816, 541},{35073, 542},{35330, 543},{35844, 544},{35847, 545},{36106, 546},{36364, 547},{36367, 548},{36626, 549},{36885, 550},{37144, 551},
+//     {37402, 552},{37405, 553},{37664, 554},{37922, 555},{38181, 556},{38440, 557},{38442, 558},{38701, 559},{38960, 560},{38963, 561},{39222, 562},{39225, 563},
+//     {55119, 564},{54867, 565},{54870, 566},{54874, 567},{54621, 568},{54367, 569},{54114, 570},{53857, 571},{53344, 572},{53086, 573},{53083, 574},{53080, 575},
+//     {52820, 576},{53330, 577},{53584, 578},{53838, 579},{33858, 580},{34113, 581},{34625, 582},{34881, 583},{35392, 584},{35904, 585},{36159, 586},{36671, 587},
+//     {36927, 588},{37438, 589},{37694, 590},{38205, 591},{38460, 592},{38972, 593},{39229, 594},{39741, 595},{40253, 596},{40509, 597},{41021, 598},{41277, 599},
+//     {41789, 600},{42045, 601},{42557, 602},{42814, 603},{43326, 604},{43582, 605},{44094, 606},{44351, 607},{44863, 608},{45375, 609},{45631, 610},{46143, 611},
+//     {46400, 612},{46912, 613},{47168, 614},{47680, 615},{47937, 616},{48449, 617},{48705, 618},{49217, 619},{49730, 620},{49987, 621},{50500, 622},{50756, 623},
+//     {51269, 624},{51525, 625},{52038, 626},{52294, 627},{52807, 628},{53063, 629},{53576, 630},{53833, 631},{54346, 632},{54603, 633},{55116, 634},{55373, 635},
+//     {55886, 636},{56143, 637},{56656, 638},{56913, 639},{57426, 640},{57683, 641},{58196, 642},{58453, 643},{58966, 644},{59223, 645},{59736, 646},{59993, 647},
+//     {60251, 648},{60764, 649},{61022, 650},{61280, 651},{61793, 652},{62051, 653},{62308, 654},{62822, 655},{63080, 656},{63338, 657},{63596, 658},{63855, 659},
+//     {64369, 660},{64628, 661},{64886, 662},{65145, 663},{65148, 664},{65407, 665},{65410, 666},{65414, 667},{65161, 668},{64908, 669},{64654, 670},{64400, 671},
+//     {64146, 672},{63635, 673},{63380, 674},{62870, 675},{62615, 676},{62361, 677},{61850, 678},{61595, 679},{61085, 680},{60830, 681},{60319, 682},{60063, 683},
+//     {59552, 684},{59295, 685},{58781, 686},{58524, 687},{58267, 688},{57753, 689},{57495, 690},{57237, 691},{56724, 692},{56466, 693},{56208, 694},{55694, 695},
+//     {55436, 696},{55179, 697},{54665, 698},{54408, 699},{53895, 700},{53638, 701},{53125, 702},{52868, 703},{52611, 704},{52098, 705},{51841, 706},{51329, 707},
+//     {50817, 708},{50561, 709},{50049, 710},{49794, 711},{49539, 712},{49287, 713},{49290, 714},{49293, 715},{49806, 716},{50063, 717},{50576, 718},{50833, 719},
+//     {51345, 720},{51602, 721},{52115, 722},{52371, 723},{52883, 724},{53140, 725},{53653, 726},{54166, 727},{54422, 728},{54935, 729},{55192, 730},{55449, 731},
+//     {55963, 732},{56220, 733},{56478, 734},{56737, 735},{56996, 736},{56999, 737},{56746, 738},{56493, 739},{56239, 740},{55728, 741},{55473, 742},{54962, 743},
+//     {54707, 744},{54196, 745},{53941, 746},{53685, 747},{53175, 748},{52920, 749},{52408, 750},{52153, 751},{51641, 752},{51129, 753},{50873, 754},{50361, 755},
+//     {50106, 756},{49594, 757},{49339, 758},{48827, 759},{48571, 760},{48059, 761},{47804, 762},{47292, 763},{46780, 764},{46524, 765},{46012, 766},{45756, 767},
+//     {45244, 768},{44988, 769},{44476, 770},{44220, 771},{43708, 772},{43196, 773},{42940, 774},{42429, 775},{42173, 776},{41661, 777}
+// };
+// clang-format on
+
+const TProgmemRGBPalette16 MagmaColor_p FL_PROGMEM = {
+    0x240000, 0x480000, 0x660000, 0x9a1100,
+    0xc32500, 0xd12a00, 0xe12f17, 0xf0350f,
+    0xff3c00, 0xff6400, 0xff8300, 0xffa000,
+    0xffba00, 0xffd400, 0xfff400, 0xffffff};
+
+const TProgmemRGBPalette16 WoodFireColors_p FL_PROGMEM = {
+    0x330e00, 0x661c00, 0x992900, 0xcc3700,
+    0xFF4500, 0xff5800, 0xff6b00, 0xff7f00,
+    0xff9200, 0xFFA500, 0xffaf00, 0xffb900,
+    0xffc300, 0xffcd00, 0xFFD700, 0xFFD900};
+
+const TProgmemRGBPalette16 NormalFire_p FL_PROGMEM = {
+    0x330000, 0x660000, 0x990000, 0xcc0000,
+    0xFF0000, 0xff0c00, 0xff1800, 0xff2400,
+    0xff3000, 0xff3c00, 0xff4800, 0xff5400,
+    0xff6000, 0xff6c00, 0xff7800, 0xff9800};
+
+const TProgmemRGBPalette16 NormalFire2_p FL_PROGMEM = {
+    0x560000, 0x6b0000, 0x820000, 0x9a0011,
+    0xB22222, 0xc22520, 0xd12a1c, 0xe12f17,
+    0xf0350f, 0xff3c00, 0xff6400, 0xff8300,
+    0xffa000, 0xffba00, 0xffd400, 0xffe400};
+
+const TProgmemRGBPalette16 LithiumFireColors_p FL_PROGMEM = {
+    0x240707, 0x470e0e, 0x6b1414, 0x8e1b1b,
+    0xB22222, 0xc14244, 0xd16166, 0xe08187,
+    0xf0a0a9, 0xFFC0CB, 0xff9ec0, 0xff7bb5,
+    0xff59a9, 0xff369e, 0xFF1493, 0xFF3493};
+
+const TProgmemRGBPalette16 SodiumFireColors_p FL_PROGMEM = {
+    0x332100, 0x664200, 0x996300, 0xcc8400,
+    0xFFA500, 0xffaf00, 0xffb900, 0xffc300,
+    0xffcd00, 0xFFD700, 0xf8cd06, 0xf0c30d,
+    0xe9b913, 0xe1af1a, 0xDAA520, 0xD99520};
+
+const TProgmemRGBPalette16 CopperFireColors_p FL_PROGMEM = {
+    0x001a00, 0x003300, 0x004d00, 0x006600,
+    0x008000, 0x239909, 0x45b313, 0x68cc1c,
+    0x8ae626, 0xADFF2F, 0x94f530, 0x7ceb30,
+    0x63e131, 0x4bd731, 0x32CD32, 0x42DD32};
+
+const TProgmemRGBPalette16 AlcoholFireColors_p FL_PROGMEM = {
+    0x000033, 0x000066, 0x000099, 0x0000cc,
+    0x0026ff, 0x004cff, 0x0073ff, 0x0099ff,
+    0x00BFFF, 0x1bc2fe, 0x36c5fd, 0x51c8fc,
+    0x6ccbfb, 0x87CEFA, 0x89CEFA, 0x97CEFA};
+
+const TProgmemRGBPalette16 PotassiumFireColors_p FL_PROGMEM = {
+    0x1e1064, 0x3d105e, 0x3c0078, 0x4B0082,
+    0x591694, 0x682da6, 0x7643b7, 0x855ac9,
+    0x9370DB, 0xa95ecd, 0xb95ecd, 0xbe4bbe,
+    0xd439b0, 0xe926a1, 0xFF1493, 0xFF5193};
+
+const TProgmemRGBPalette16 EndeavourColors_p FL_PROGMEM = {
+    0x7f7efc, 0x614dc8, 0x7f3ebe, 0xac71fc,
+    0x5f01a6, 0xa43198, 0xffbda7, 0xff7f7e,
+    0xc492eb, 0xf588b1, 0xe96caa, 0xdd5662,
+    0x4c31e1, 0x856cd8, 0xb5a7fd, 0xcb6de5};
+
+const TProgmemRGBPalette16 SunsetColors_p FL_PROGMEM = {
+    0x580000, 0x680000, 0x780000, 0x880000,
+    0x931600, 0xb31600, 0xd31600, 0xdf6800,
+    0xff6800, 0xffa800, 0x871612, 0xa71612,
+    0xc71612, 0x540027, 0x640027, 0x740027};
+
+const TProgmemRGBPalette16 *all_pallets[16] = {&OceanColors_p, &LavaColors_p, &ForestColors_p, &PartyColors_p, &RainbowColors_p,
+                                               &MagmaColor_p, &WoodFireColors_p, &NormalFire_p, &NormalFire2_p,
+                                               &LithiumFireColors_p, &SodiumFireColors_p, &CopperFireColors_p,
+                                               &AlcoholFireColors_p, &PotassiumFireColors_p, &SunsetColors_p, &EndeavourColors_p};
+
+const auto all_palettes_str = "Ocean;Lava;Forest;Party;Rainbow;Magma;WoodFire;Fire;Fire2;Lithium;Sodium;Copper;Alcohol;Potassium;Sunset;Endeavour";
+bool should_reload_custom_pallette; // Flag to tell display_palette function to reload palette
+
+
 
 // ========= EFFECTS
+
+// TODO: Possible other effects
+// Fire
+// meteor rain
+// hyperjump
+// Acid (distorted sinuses)
+// Rain
+// Sea sailing
 
 enum EffectMode : int {
     Static = 0,
     Twinkle = 1,
-    Rainbow = 2,
-    Rainbow2D = 3,
-    Forest2D = 4,
-    Lava2D = 5,
-    Ocean2D = 6,
-    Potassium2D = 7,
-    Party2D = 8,
-    Police = 9
+    CustomPalette = 2,
+    Rainbow = 3,
+    Forest = 4,
+    Lava = 5,
+    Ocean = 6,
+    Sunset = 7,
+    Potassium = 8,
+    Party = 9,
+    Rainbow2D = 10,
+    Forest2D = 11,
+    Lava2D = 12,
+    Ocean2D = 13,
+    Sunset2D = 14,
+    Potassium2D = 15,
+    Party2D = 16,
+    Police = 17,
+    UserShader1 = 18
 };
+
+const auto effect_modes_str = "Static;Twinkle;CustomPalette;Rainbow;Forest;Lava;Ocean;Sunset;Potassium;Party;Rainbow2D;Forest2D;Lava2D;Ocean2D;Sunset2D;Potassium2D;Party2D;Police;UserShader1";
 
 enum _2DEffectType : int {
     RightDiagonal = 0,
@@ -169,12 +339,14 @@ enum _2DEffectType : int {
     Mixed2_Inverted = 17
 };
 
-int police_frame = 0;
-int police_frames_per_color = 5; // 5 frames per color
-int police_flashes = 2;          // 2 per flashes color
+const auto _2d_effect_types_str = "RightDiagonal;LeftDiagonal;Up;Left;CenterOutward;Clockwise;SpiralClockwise;Mixed1;Mixed2";
 
-const CRGB police_color1 = CRGB::FireBrick;
-const CRGB police_color2 = CRGB::DodgerBlue;
+int police_frame = 0;
+int police_frames_per_color = 2;
+int police_flashes = 2; // 2 per flashes color
+
+const CRGB police_color1 = CRGB::Red;
+const CRGB police_color2 = CRGB::Blue;
 
 // ========= STORAGE
 
@@ -200,20 +372,26 @@ struct _2DEffectsFSData {
     _2DEffectType _2d_effects_brightness_mode = _2DEffectType::Mixed1;
 };
 _2DEffectsFSData _2d_effects_fsdata;
-FileData _2d_effects_fsdata_handle(&LittleFS, "/effect_settings/_2d.dat", 'B', &_2d_effects_fsdata, sizeof(_2d_effects_fsdata));
+FileData _2d_effects_fsdata_handle(&LittleFS, "/effect_settings-2d.dat", 'B', &_2d_effects_fsdata, sizeof(_2d_effects_fsdata));
+
+struct CustomPaletteEffectFSData {
+    CRGBPalette16 current_custom_palette;
+    bool current_custom_palette_is_2d;
+};
+CustomPaletteEffectFSData custom_palette_effect_fsdata;
+FileData custom_palette_effect_fsdata_handle(&LittleFS, "/effect_settings-custom_palette.dat", 'B', &custom_palette_effect_fsdata, sizeof(custom_palette_effect_fsdata));
 
 struct TwinkleEffectFSData {
     uint32_t twinkle_backdrop_effect_color = CRGB::Navy;
     uint8_t twinkle_fadein_frames = 25;
     uint8_t twinkle_fadeout_frames = 15;
     double twinkle_fadeout_speed = 1.03;
-    double twinkle_fadein_speed = 0.05;
+    double twinkle_fadein_speed = 1.05;
 };
 TwinkleEffectFSData twinkle_effect_fsdata;
-FileData twinkle_effect_fsdata_handle(&LittleFS, "/effect_settings/twinkle.dat", 'B', &twinkle_effect_fsdata, sizeof(twinkle_effect_fsdata));
+FileData twinkle_effect_fsdata_handle(&LittleFS, "/effect_settings-twinkle.dat", 'B', &twinkle_effect_fsdata, sizeof(twinkle_effect_fsdata));
 
-#define FILEDATAS_LEN 4
-FileData *filedatas[FILEDATAS_LEN] = {&wifi_fsdata_handle, &general_fsdata_handle, &_2d_effects_fsdata_handle, &twinkle_effect_fsdata_handle};
+FileData *filedatas[5] = {&wifi_fsdata_handle, &general_fsdata_handle, &_2d_effects_fsdata_handle, &twinkle_effect_fsdata_handle, &custom_palette_effect_fsdata_handle};
 
 // =========
 
@@ -238,12 +416,12 @@ void enable_current_effect_manual_switch() {
         return;
     }
     general_fsdata.chosen_ui_effects ^= (1 << current_mode);
-    wifi_fsdata_handle.update();
+    save_to_fs(false);
 }
 
 void setup_file_in_fs(FileData &handle) {
     handle.setTimeout(30000);
-    FDstat_t stat = wifi_fsdata_handle.read();
+    FDstat_t stat = handle.read();
 
     switch (stat) {
     case FD_FS_ERR:
@@ -271,26 +449,23 @@ void init_fs() {
     LittleFS.begin();
 
     update_status_led(CRGB::SandyBrown); // Filesystem initialised
-    for (int i = 0; i < FILEDATAS_LEN; i++) {
-        setup_file_in_fs(*filedatas[i]);
+    for (auto filedata : filedatas) {
+        setup_file_in_fs(*filedata);
     }
 
     ui_input_ssid = wifi_fsdata.ssid;
     ui_input_password = wifi_fsdata.password;
 
-    ui_current_2d_effects_color_mode_is_inverted = _2d_effects_fsdata._2d_effects_color_mode % 2 != 0;
-    ui_current_2d_effects_color_mode = floor(_2d_effects_fsdata._2d_effects_color_mode / 2);
-
-    ui_current_2d_effects_brightness_mode_is_inverted = _2d_effects_fsdata._2d_effects_brightness_mode % 2 != 0;
-    ui_current_2d_effects_brightness_mode = floor(_2d_effects_fsdata._2d_effects_brightness_mode / 2);
+    ui_2d_effects_color_mode_is_inverted = _2d_effects_fsdata._2d_effects_color_mode % 2 != 0;
+    ui_2d_effects_color_mode = floor(_2d_effects_fsdata._2d_effects_color_mode / 2);
 }
 
 void save_to_fs(bool now) {
-    for (int i = 0; i < FILEDATAS_LEN; i++) {
+    for (auto filedata : filedatas) {
         if (now) {
-            filedatas[i]->updateNow();
+            filedata->updateNow();
         } else {
-            filedatas[i]->update();
+            filedata->update();
         }
     }
 }
@@ -305,8 +480,8 @@ void try_connect_to_wifi() {
 
         int iteration = 0;
         while (WiFi.status() != WL_CONNECTED) {
-            delay(1000);
             update_status_led(CRGB::Coral);
+            delay(1000);
             iteration++;
 
             if (iteration > 60) {
@@ -323,11 +498,19 @@ void try_connect_to_wifi() {
                 update_status_led(CRGB::Red);
                 update_status_led(CRGB::Orange);
                 update_status_led(CRGB::Red);
+                delay(3000);
             } else {
                 update_status_led(CRGB::Green4);
                 update_status_led(CRGB::Green3);
-                update_status_led(CRGB::Green2);
-                update_status_led(CRGB::Green1);
+
+                if (MDNS.addService("http", "tcp", 80)) {
+                    update_status_led(CRGB::Green2);
+                    update_status_led(CRGB::Green1);
+                } else {
+                    update_status_led(CRGB::Red2);
+                    update_status_led(CRGB::Red1);
+                    delay(3000);
+                }
             }
 
             break;
@@ -366,6 +549,60 @@ void try_connect_to_wifi() {
     }
 }
 
+void load_custom_palette_from_preset_in_ui() {
+    const TProgmemRGBPalette16 &preset = *all_pallets[ui_selected_custom_palette];
+    for (uint8_t i = 0; i < 16; i++) {
+        ui_current_loaded_custom_palette[i] = preset[i];
+        custom_palette_effect_fsdata.current_custom_palette.entries[i] = preset[i];
+    }
+    // Tell the palette display function to reload palette
+    should_reload_custom_pallette = true;
+    save_to_fs(false);
+}
+
+void load_actual_custom_palette_from_ui() {
+    for (uint8_t i = 0; i < 16; i++) {
+        custom_palette_effect_fsdata.current_custom_palette.entries[i] = ui_current_loaded_custom_palette[i];
+    }
+    should_reload_custom_pallette = true;
+    save_to_fs(false);
+}
+
+void display_palette_selector(gh::Builder &b) {
+    b.Label("Palette").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
+
+    if (b.Select(&ui_selected_custom_palette).text(all_palettes_str).label("Preset").click()) {
+        load_custom_palette_from_preset_in_ui();
+        b.refresh();
+    }
+
+    for (uint8_t x = 0; x < 4; x++) {
+        b.beginRow();
+        for (uint8_t y = 0; y < 4; y++) {
+            if (b.Color(&ui_current_loaded_custom_palette[x * 4 + y]).noLabel().click()) {
+                load_actual_custom_palette_from_ui();
+            }
+        }
+        b.endRow();
+    }
+}
+
+void display_2d_mode_settings(gh::Builder &b) {
+    b.Label("More 2d-palette-fill mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
+    {
+        gh::Row r(b);
+
+        bool color_mode_inverted = b.Select(&ui_2d_effects_color_mode).text(_2d_effect_types_str).label("Mode").click();
+        bool color_mode_dropdown = b.Switch(&ui_2d_effects_color_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
+
+        if (color_mode_dropdown || color_mode_inverted) {
+            _2d_effects_fsdata._2d_effects_color_mode = (_2DEffectType)(2 * ui_2d_effects_color_mode + ui_2d_effects_color_mode_is_inverted);
+            save_to_fs(false);
+            b.refresh();
+        }
+    }
+}
+
 void build_ui(gh::Builder &b) {
 
     ui_current_effect_enabled = is_current_effect_enabled_in_manual_switch();
@@ -392,7 +629,7 @@ void build_ui(gh::Builder &b) {
     } else {
         b.Title("SNORK CONTROLLER 9000").fontSize(25);
 
-        if (b.Select(&current_mode).text("Static;Twinkle;Rainbow;Rainbow2D;Forest2D;Lava2D;Ocean2D;Potassium2D;Party2D;Police").label("Mode").click()) {
+        if (b.Select(&current_mode).text(effect_modes_str).label("Mode").click()) {
             b.refresh();
             save_to_fs(false);
         }
@@ -432,59 +669,71 @@ void build_ui(gh::Builder &b) {
             color_selector_enabled = true;
             break;
 
-        case EffectMode::Forest2D:
-        case EffectMode::Lava2D:
-        case EffectMode::Ocean2D:
-        case EffectMode::Potassium2D:
-        case EffectMode::Party2D:
-        case EffectMode::Rainbow2D:
-            label1 = "Color speed";
-            label2 = "Brightness speed";
+        case EffectMode::Forest:
+        case EffectMode::Lava:
+        case EffectMode::Ocean:
+        case EffectMode::Sunset:
+        case EffectMode::Potassium:
+        case EffectMode::Party:
+        case EffectMode::Rainbow:
+        case EffectMode::CustomPalette:
+
+            label1 = "Speed";
+            label2 = "Squish";
             label3 = "Saturation";
 
             color1 = gh::Colors::Aqua;
             color2 = gh::Colors::Mint;
             color3 = gh::Colors::Pink;
 
-            b.Label("Additional 2d mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
-            {
-                gh::Row r(b);
+            if (current_mode == EffectMode::CustomPalette) {
 
-                bool color_mode_inverted = b.Select(&ui_current_2d_effects_color_mode).text("RightDiagonal;LeftDiagonal;Up;Left;CenterOutward;Clockwise;SpiralClockwise;Mixed1;Mixed2").label("Color mode").click();
-                bool color_mode_dropdown = b.Switch(&ui_current_2d_effects_color_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
-
-                if (color_mode_dropdown || color_mode_inverted) {
-                    _2d_effects_fsdata._2d_effects_color_mode = (_2DEffectType)(2 * ui_current_2d_effects_color_mode + ui_current_2d_effects_color_mode_is_inverted);
-                    save_to_fs(false);
+                if (b.Switch(&custom_palette_effect_fsdata.current_custom_palette_is_2d).color(gh::Colors::Mint).label("2D").click()) {
                     b.refresh();
+                    save_to_fs(false);
+                }
+
+                display_palette_selector(b);
+
+                if (custom_palette_effect_fsdata.current_custom_palette_is_2d) {
+                    display_2d_mode_settings(b);
                 }
             }
 
-            {
-                gh::Row r(b);
-
-                bool brightness_mode_inverted = b.Select(&ui_current_2d_effects_brightness_mode).text("RightDiagonal;LeftDiagonal;Up;Left;CenterOutward;Clockwise;SpiralClockwise;Mixed1;Mixed2").label("Brightness mode").click();
-                bool brightness_mode_dropdown = b.Switch(&ui_current_2d_effects_brightness_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
-
-                if (brightness_mode_dropdown || brightness_mode_inverted) {
-                    // Extend to full range and add offset (1) if the mode is mirrored
-                    _2d_effects_fsdata._2d_effects_brightness_mode = (_2DEffectType)(2 * ui_current_2d_effects_brightness_mode + ui_current_2d_effects_brightness_mode_is_inverted);
-                    save_to_fs(false);
-                    b.refresh();
-                }
-            }
-            b.Label().noTab().noLabel().disabled().size(1, 1);
-
+            b.Space(2, 2);
             break;
 
-        case EffectMode::Rainbow:
+        case EffectMode::Forest2D:
+        case EffectMode::Lava2D:
+        case EffectMode::Ocean2D:
+        case EffectMode::Sunset2D:
+        case EffectMode::Potassium2D:
+        case EffectMode::Party2D:
+        case EffectMode::Rainbow2D:
             label1 = "Speed";
-            label2 = "Step";
+            label2 = "Squish";
             label3 = "Saturation";
 
             color1 = gh::Colors::Aqua;
-            color2 = gh::Colors::Violet;
+            color2 = gh::Colors::Mint;
             color3 = gh::Colors::Pink;
+
+            display_2d_mode_settings(b);
+
+            b.Space(2, 2);
+            break;
+
+        case EffectMode::UserShader1:
+
+            label1 = "Red speed";
+            label2 = "Green speed";
+            label3 = "Blue speed";
+
+            color1 = gh::Colors::Red;
+            color2 = gh::Colors::Green;
+            color3 = gh::Colors::Blue;
+
+            b.Slider(&ui_shader1_attenuation_amount).range(1, 2, 0.1).unit("").color(gh::Colors::Aqua).label("Attenuation");
             break;
 
         default:
@@ -492,24 +741,28 @@ void build_ui(gh::Builder &b) {
             label1 = "P1";
             label2 = "P2";
             label3 = "P3";
+
+            color1 = gh::Colors::Red;
+            color2 = gh::Colors::Green;
+            color3 = gh::Colors::Blue;
             break;
         }
 
         if (current_mode == EffectMode::Twinkle) {
-            b.Label("Additional sparkle mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
-            if (b.Color(&twinkle_effect_fsdata.twinkle_backdrop_effect_color).click()) {
+            b.Label("Additional twinkle mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
+            if (b.Color(&twinkle_effect_fsdata.twinkle_backdrop_effect_color).label("Background color").click()) {
                 b.refresh();
                 save_to_fs(false);
             }
             {
                 gh::Row r(b);
                 b.Slider(&twinkle_effect_fsdata.twinkle_fadein_frames).range(10, 40, 1).unit("").color(gh::Colors::Aqua).label("Fadein frames");
-                b.Slider(&twinkle_effect_fsdata.twinkle_fadein_speed).range(0.01, 0.1, 0.01).unit("").color(gh::Colors::Violet).label("Fadein speed");
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadein_speed).range(1.01, 1.2, 0.01).unit("").color(gh::Colors::Violet).label("Fadein speed");
             }
             {
                 gh::Row r(b);
                 b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_frames).range(10, 40, 1).unit("").color(gh::Colors::Orange).label("Fadeout frames");
-                b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_speed).range(1.01, 1.1, 0.01).unit("").color(gh::Colors::Yellow).label("Fadeout speed");
+                b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_speed).range(1.01, 1.2, 0.01).unit("").color(gh::Colors::Yellow).label("Fadeout speed");
             }
             b.Label().noTab().noLabel().disabled().size(1, 1);
         }
@@ -548,11 +801,17 @@ void build_ui(gh::Builder &b) {
         }
 
         if (ui_manual_mode) {
-            int bright_percent = (1.0 - brightness_pot_value) * 100;
-            b.Gauge(&bright_percent).range(0, 100, 1).unit("%").color(gh::Colors::Yellow).label("Brightness");
+            int bright_percent = ceil((1.0 - brightness_pot_value) * 100);
+            if (bright_percent == 0) {
+                b.Title("OFF").label("Power").fontSize(25);
+            } else {
+                b.Gauge(&bright_percent).range(0, 100, 1).unit("%").color(gh::Colors::Yellow).label("Brightness");
+            }
         } else {
             b.Slider(&ui_brightness_pot_value).range(0, 100, 1).unit("%").color(gh::Colors::Yellow).label("Brightness");
         }
+
+        b.Label(String(FastLED.getFPS()) + " FPS").noLabel();
     }
 }
 
@@ -560,6 +819,8 @@ void init_webui() {
     hub.setVersion(VERSION);
     hub.onBuild(build_ui);
     hub.begin();
+
+    load_custom_palette_from_preset_in_ui();
 
     update_status_led(CRGB::YellowGreen);
 }
@@ -576,7 +837,7 @@ void setup() {
     pinMode(transistor_pin, OUTPUT);
 
     FastLED.addLeds<WS2815, STRIP_PIN>(leds, NUM_LEDS); // GRB ordering is assumed
-    // FastLED.setDither(0); // Disable brightness dithering
+    FastLED.setDither(0);                               // Disable brightness dithering due to low FPS (25)
     FastLED.setBrightness(MAX_BRIGHT * 0.5);
     FastLED.setCorrection(LEDColorCorrection::TypicalPixelString);
 
@@ -594,31 +855,30 @@ void setup() {
 }
 
 // https://pinout.uno/articles/analog-signal-noise-filtering-on-arduino/
-int read_median(int pin, int samples) {
-    // storage array
-    int raw[samples];
+int adc_raw[ADC_MEDIAN_SAMPLES];
+int read_median(int pin) {
     // read the input and put the value in the array cells
-    for (int i = 0; i < samples; i++) {
-        raw[i] = analogRead(pin);
+    for (uint8_t i = 0; i < ADC_MEDIAN_SAMPLES; i++) {
+        adc_raw[i] = analogRead(pin);
     }
     // sort the array in ascending order of cell values
     int temp = 0; // temporary variable
 
-    for (int i = 0; i < samples; i++) {
-        for (int j = 0; j < samples - 1; j++) {
-            if (raw[j] > raw[j + 1]) {
-                temp = raw[j];
-                raw[j] = raw[j + 1];
-                raw[j + 1] = temp;
+    for (uint8_t i = 0; i < ADC_MEDIAN_SAMPLES; i++) {
+        for (uint8_t j = 0; j < ADC_MEDIAN_SAMPLES - 1; j++) {
+            if (adc_raw[j] > adc_raw[j + 1]) {
+                temp = adc_raw[j];
+                adc_raw[j] = adc_raw[j + 1];
+                adc_raw[j + 1] = temp;
             }
         }
     }
     // return the value of the middle cell of the array
-    return raw[samples / 2];
+    return adc_raw[ADC_MEDIAN_SAMPLES / 2];
 }
 
 void read_pot(int pin, double *value, int max_value) {
-    *value = min((*value * (1 - ADC_SMOOTHING) + (read_median(pin, 15) / (double)max_value) * ADC_SMOOTHING), 1.0);
+    *value = min((*value * (1 - ADC_SMOOTHING) + (read_median(pin) / (double)max_value) * ADC_SMOOTHING), 1.0);
 }
 
 // EFFECT FUNCS
@@ -660,37 +920,35 @@ CRGB hsv_offset(CRGB col, double h_offset, double s_offset, double v_offset) {
 }
 
 void fill_color(const CRGB &color) {
-    for (int i = 0; i < NUM_LEDS; ++i) {
+    for (uint16_t i = 0; i < NUM_LEDS; ++i) {
         leds[i] = color;
     }
 }
 
-void rainbow_wave(double speed, double delta_hue, double saturation_offset) {
-    for (int i = 0; i < NUM_LEDS; i++) {
-        leds[i] = hsv_offset(ColorFromPalette(FlatRainbowColors_p, (i + beat8(40 * speed)) * delta_hue, 255), 0, saturation_offset - 1, 0);
-    }
+uint16_t u16_from_u8(uint8_t in) {
+    return in << 8; // * 256
 }
 
-fl::u8 get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
+uint16_t get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
     switch (effect_type) {
     case _2DEffectType::RightDiagonal:
-        return coordsX[index] - coordsY[index];
+        return u16_from_u8(coordsX[index] - coordsY[index]);
     case _2DEffectType::LeftDiagonal:
-        return ((int)coordsX[index] + (int)coordsY[index]) / 2;
+        return u16_from_u8(((uint16_t)coordsX[index] + (uint16_t)coordsY[index]) / 2);
     case _2DEffectType::Up:
-        return coordsY[index];
+        return u16_from_u8(coordsY[index]);
     case _2DEffectType::Left:
-        return -coordsX[index];
+        return u16_from_u8(255 - coordsX[index]);
     case _2DEffectType::CenterOutward:
-        return -radii[index];
+        return u16_from_u8(255 - radii[index]);
     case _2DEffectType::Clockwise:
-        return angles[index];
+        return u16_from_u8(angles[index]);
     case _2DEffectType::SpiralClockwise:
-        return ((int)angles[index] * (int)radii[index]) / 255;
+        return (uint16_t)angles[index] * (uint16_t)radii[index];
     case _2DEffectType::Mixed1:
-        return ((int)get_2d_palette_phase_offset(_2DEffectType::SpiralClockwise, index) + (int)get_2d_palette_phase_offset(_2DEffectType::SpiralCounterClockwise, index)) / 2;
+        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::SpiralClockwise, index) + (uint32_t)get_2d_palette_phase_offset(_2DEffectType::SpiralCounterClockwise, index)) / 2;
     case _2DEffectType::Mixed2:
-        return ((int)get_2d_palette_phase_offset(_2DEffectType::Up, index) + (int)get_2d_palette_phase_offset(_2DEffectType::Clockwise, index)) / 2;
+        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::Up, index) + (uint32_t)get_2d_palette_phase_offset(_2DEffectType::Clockwise, index)) / 2;
     case _2DEffectType::Down:
     case _2DEffectType::Right:
     case _2DEffectType::LeftDiagonalBackwards:
@@ -700,26 +958,82 @@ fl::u8 get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
     case _2DEffectType::SpiralCounterClockwise:
     case _2DEffectType::Mixed1_Inversed:
     case _2DEffectType::Mixed2_Inverted:
-        return -get_2d_palette_phase_offset((_2DEffectType)(effect_type - 1), index);
+        return UINT16_MAX - get_2d_palette_phase_offset((_2DEffectType)(effect_type - 1), index);
 
     default:
         break;
     }
 }
 
-void display_2d_palette(const TProgmemRGBPalette16 &pal, double color_speed, double brightness_speed, double saturation_offset) {
-    for (int i = 0; i < NUM_LEDS; i++) {
-        fl::u8 color_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_color_mode, i);
-        fl::u8 brightness_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_brightness_mode, i);
+// Copy of beat88 modified to work with beats per hour instead of per minute (return raw 32 bit value, not divided yet)
+LIB8STATIC uint32_t beat16_hour_raw_32(uint16_t beats_per_hour) {
+    // 1195 = 4.66666667 (to convert to beats per 65536ms (16 uint max), from beat88) * 256 ( << 8 )
+    return millis() * beats_per_hour * 1195;
+}
 
-        accum88 color_bpm = 30 * color_speed;
-        accum88 brightness_bpm = 30 * brightness_speed;
+uint16_t prev_color_bph;
+int32_t color_phase_offset = 0;
+uint32_t last_frame_color_beat_raw;
 
-        leds[i] = hsv_offset(ColorFromPalette(pal,
-                                              beatsin8(color_bpm, 0, 255, 0, color_phase + (color_bpm / 60) % 255),
-                                              beatsin8(brightness_bpm, 35, 255, 0, brightness_phase + (brightness_bpm / 60) % 255)),
-                             0, saturation_offset - 1, 0);
+const fl::u32 *prev_pal;
+CRGBPalette16 currently_displayed_color_palette;
+double prev_saturation_offset;
+
+template <bool IS_FLAT, class T>
+void display_color_palette(T &pal,
+                           double speed, double squish,
+                           double saturation_offset) {
+
+    if (abs(prev_saturation_offset - saturation_offset) >= 0.01 || prev_pal != (fl::u32 *)&pal || should_reload_custom_pallette) {
+        should_reload_custom_pallette = false;
+        if (saturation_offset >= 0.99) {
+            currently_displayed_color_palette = pal;
+        } else {
+            for (fl::u8 i = 0; i < 16; i++) {
+                currently_displayed_color_palette.entries[i] = hsv_offset(pal[i], 0, (saturation_offset - 1) * 0.7, 0);
+            }
+        }
+        prev_pal = (fl::u32 *)&pal;
+        prev_saturation_offset = saturation_offset;
     }
+
+    squish = squish * 2 + 0.1;
+    uint16_t color_bph = 150 * speed;
+    // Prevent initial phase shift
+    if (prev_color_bph == 0) {
+        prev_color_bph = color_bph;
+    }
+
+    uint32_t current_frame_color_beat_raw = beat16_hour_raw_32(color_bph);
+
+    // 'Freeze' the beat value while changing the speed so there is no flicker
+    if (color_bph != prev_color_bph) {
+        prev_color_bph = color_bph;
+        color_phase_offset += (int32_t)last_frame_color_beat_raw - (int32_t)current_frame_color_beat_raw;
+    }
+
+    current_frame_color_beat_raw += color_phase_offset;
+
+    last_frame_color_beat_raw = current_frame_color_beat_raw;
+
+    uint16_t current_frame_color_beat = current_frame_color_beat_raw >> 16;
+
+    if (IS_FLAT) {
+        for (uint16_t i = 0; i < NUM_LEDS; i++) {
+            leds[i] = ColorFromPalette(currently_displayed_color_palette,
+                                       ((uint16_t)(current_frame_color_beat + i * squish * (UINT16_MAX / NUM_LEDS))) >> 8);
+        }
+    } else {
+        for (uint16_t i = 0; i < NUM_LEDS; i++) {
+            uint16_t color_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_color_mode, i);
+            uint16_t brightness_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_brightness_mode, i);
+
+            leds[i] = ColorFromPalette(currently_displayed_color_palette,
+                                       ((uint16_t)(current_frame_color_beat + color_phase * squish)) >> 8);
+        }
+    }
+
+    blur1d(leds, NUM_LEDS, 64);
 }
 
 #pragma endregion
@@ -727,7 +1041,7 @@ void display_2d_palette(const TProgmemRGBPalette16 &pal, double color_speed, dou
 #pragma region sparkle
 
 int sparkle_pos = 0;
-CRGB sparkle_current_frame[NUM_LEDS];
+double current_twinkle_fade_amount = 0;
 std::set<int> current_sparkle_targets;
 
 void single_sparkle(int pixel_index) {
@@ -749,42 +1063,26 @@ void twinkle(CRGB col) {
     }
 
     if (sparkle_pos <= 0) {
-        double fade_fract = twinkle_effect_fsdata.twinkle_fadein_speed;
-
-        CRGB target_color;
-
-        for (int i = 0; i < NUM_LEDS; i++) {
-
-            target_color = current_sparkle_targets.find(i) == current_sparkle_targets.end() ? CRGB::Black : col;
-
-            sparkle_current_frame[i].r = sparkle_current_frame[i].r * (1 - fade_fract) + target_color.r * fade_fract;
-            sparkle_current_frame[i].g = sparkle_current_frame[i].g * (1 - fade_fract) + target_color.g * fade_fract;
-            sparkle_current_frame[i].b = sparkle_current_frame[i].b * (1 - fade_fract) + target_color.b * fade_fract;
-        }
+        current_twinkle_fade_amount += constrain(twinkle_effect_fsdata.twinkle_fadein_speed - 1, 0.0, 1.0);
     } else {
-
-        double speed_mod = twinkle_effect_fsdata.twinkle_fadeout_speed * (1 + sparkle_pos / 100.0);
-
-        for (int i = 0; i < NUM_LEDS; i++) {
-            sparkle_current_frame[i].r /= speed_mod; // Exponential (double exponential?) fall-off, 1/4 faster at the end
-            sparkle_current_frame[i].g /= speed_mod;
-            sparkle_current_frame[i].b /= speed_mod;
-        }
+        double speed_mod = twinkle_effect_fsdata.twinkle_fadeout_speed * (1 + sparkle_pos / 50.0); // Exponential (double exponential?) fall-off, 1/2 faster at the end
+        current_twinkle_fade_amount /= speed_mod;
     }
 
     sparkle_pos += 1;
 
     if (sparkle_pos > twinkle_effect_fsdata.twinkle_fadeout_frames) {
         sparkle_pos = -twinkle_effect_fsdata.twinkle_fadein_frames;
-        for (int i = 0; i < NUM_LEDS; ++i) {
-            sparkle_current_frame[i] = CRGB::Black;
-        }
+        current_twinkle_fade_amount = 0;
     }
 
-    for (int i = 0; i < NUM_LEDS; i++) {
-        leds[i].r = constrain(sparkle_current_frame[i].r + 4, 0, 255);
-        leds[i].g = constrain(sparkle_current_frame[i].g + 4, 0, 255);
-        leds[i].b = constrain(sparkle_current_frame[i].b + 20, 0, 255);
+    CRGB target_color;
+    for (uint16_t i = 0; i < NUM_LEDS; i++) {
+        target_color = current_sparkle_targets.find(i) == current_sparkle_targets.end() ? CRGB::Black : col;
+
+        leds[i].r = constrain(target_color.r * current_twinkle_fade_amount + UNPACK_R(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
+        leds[i].g = constrain(target_color.g * current_twinkle_fade_amount + UNPACK_G(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
+        leds[i].b = constrain(target_color.b * current_twinkle_fade_amount + UNPACK_B(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
     }
 
     FastLED.show();
@@ -795,12 +1093,50 @@ void twinkle(CRGB col) {
 #pragma region police
 
 void render_police() {
-    int current_segment_index = police_frame / police_frames_per_color;
-    CRGB target_color = current_segment_index % 2 == 0 ? CRGB::Black : (current_segment_index > police_flashes * 2 ? police_color2 : police_color1);
-    fill_color(target_color);
-    police_frame++;
-    if (police_frame > police_frames_per_color * police_flashes * 4) { // red - black - red - black - blue - black - blue - black
+    int current_segment_index = police_frame / police_frames_per_color;                                                  // X4 (8 segments for 2 flashes)
+    byte target_color_index = current_segment_index % 2 == 0 ? 2 : (current_segment_index > police_flashes * 2 ? 1 : 0); // Switch sides after half the time
+
+    if (target_color_index == 2) {
+        fill_color(CRGB::Black);
+    } else {
+        bool target_color_index_b = target_color_index;
+        for (int i = 0; i < NUM_LEDS; ++i) {
+            // Half one color, second another, when target_color_index_b switches, color sides change
+            leds[i] = (coordsX[i] > 130 ^ target_color_index_b) ? police_color1 : police_color2;
+        }
     }
+
+    police_frame++;
+    if (police_frame > police_frames_per_color * police_flashes * 4) { // red - black - red - black - blue - black - blue - black // 2 flashes
+        police_frame = 0;
+    }
+
+    blur1d(leds, NUM_LEDS, 64);
+}
+
+#pragma endregion
+
+#pragma region shader1
+
+// sin function that is scaled from the top max value (from n to UINT16_MAX)
+uint16_t attenuated_sin16(uint16_t theta) {
+    uint16_t offset_sin = (uint16_t)((int32_t)sin16(theta) + UINT16_MAX_HALF); // from 0 to UINT16_MAX
+    uint16_t scaled_sin = offset_sin / ui_shader1_attenuation_amount;          // from 0 to UINT16_MAX / atten
+    return UINT16_MAX - scaled_sin;                                            // from UINT16_MAX / atten to UINT16_MAX
+}
+
+void render_shader1(double speed_r, double speed_g, double speed_b) {
+    double u = ui_shader1_attenuation_amount;
+    uint16_t offset_r = beat16_hour_raw_32(120 * speed_r) >> 16;
+    uint16_t offset_g = beat16_hour_raw_32(120 * speed_g) >> 16;
+    uint16_t offset_b = beat16_hour_raw_32(120 * speed_b) >> 16;
+    for (uint16_t i = 0; i < NUM_LEDS; i++) {
+        leds[i].r = attenuated_sin16(u16_from_u8(coordsX[i]) + offset_r) >> 8;
+        leds[i].g = attenuated_sin16(u16_from_u8(coordsY[i]) + offset_g) >> 8;
+        leds[i].b = attenuated_sin16(u16_from_u8(angles[i]) + offset_b) >> 8;
+    }
+
+    blur1d(leds, NUM_LEDS, 64);
 }
 
 #pragma endregion
@@ -844,32 +1180,63 @@ void update_effects() {
     case EffectMode::Static:
         fill_color(CRGB(parameter1 * 255, parameter2 * 255, parameter3 * 255));
         break;
+    case EffectMode::CustomPalette:
+        if (custom_palette_effect_fsdata.current_custom_palette_is_2d) {
+            display_color_palette<false>(custom_palette_effect_fsdata.current_custom_palette, parameter1, parameter2, parameter3);
+        } else {
+            display_color_palette<true>(custom_palette_effect_fsdata.current_custom_palette, parameter1, parameter2, parameter3);
+        }
+        break;
     case EffectMode::Rainbow:
-        rainbow_wave(parameter1, parameter2, parameter3);
+        display_color_palette<true>(RainbowColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Lava:
+        display_color_palette<true>(LavaColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Forest:
+        display_color_palette<true>(ForestColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Ocean:
+        display_color_palette<true>(OceanColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Sunset:
+        display_color_palette<true>(SunsetColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Potassium:
+        display_color_palette<true>(EndeavourColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Party:
+        display_color_palette<true>(PartyColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Twinkle:
         twinkle(CRGB(parameter1 * 255, parameter2 * 255, parameter3 * 255));
         break;
     case EffectMode::Rainbow2D:
-        display_2d_palette(RainbowColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(RainbowColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Lava2D:
-        display_2d_palette(LavaColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(LavaColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Forest2D:
-        display_2d_palette(ForestColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(ForestColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Ocean2D:
-        display_2d_palette(OceanColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(OceanColors_p, parameter1, parameter2, parameter3);
+        break;
+    case EffectMode::Sunset2D:
+        display_color_palette<false>(SunsetColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Potassium2D:
-        display_2d_palette(PotassiumFireColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(PotassiumFireColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Party2D:
-        display_2d_palette(PartyColors_p, parameter1, parameter2, parameter3);
+        display_color_palette<false>(PartyColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Police:
         render_police();
+        break;
+    case EffectMode::UserShader1:
+        render_shader1(parameter1, parameter2, parameter3);
         break;
     default:
         break;
@@ -882,8 +1249,8 @@ void update_effects() {
 
 void loop() {
 
-    for (int i = 0; i < FILEDATAS_LEN; i++) {
-        filedatas[i]->tick();
+    for (auto data : filedatas) {
+        data->tick();
     }
     hub.tick();
     btn.tick();
