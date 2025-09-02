@@ -1,6 +1,10 @@
 #define GH_INCLUDE_PORTAL
 #define GH_NO_MQTT
-#define GH_NO_STREAM
+// #define GH_NO_STREAM // For old Hub version
+
+#define private public // Yeah, this is cursed, but I need access to internal address pointer for ease of use and to avoid parsing strings
+#include "IPAddress.h"
+#undef private
 
 #include <Arduino.h>
 
@@ -17,8 +21,6 @@
 #include <set>
 
 #define UINT16_MAX_HALF UINT16_MAX / 2
-
-void save_to_fs(bool);
 
 constexpr auto RGB_PACKED(const fl::u8 red, const fl::u8 green, const fl::u8 blue) -> uint32_t {
     return static_cast<uint32_t>((red << 16) | (green << 8) | blue);
@@ -38,13 +40,15 @@ constexpr auto UNPACK_B(uint32_t colr) -> fl::u8 {
 
 // ========= WIRELESS
 
+#define NET_PREFIX "MyDevices" // The default one, for ease of use
 #define DEV_NAME "Snork"
 #define MDNS_DEV_NAME "snork"
-#define VERSION "0.1.4-nice"
+#define VERSION "0.1.6-nuclear_cupcake"
 
-GyverHub hub(DEV_NAME, DEV_NAME, "f0eb"); // network name, имя устройства, иконка
+GyverHub hub(NET_PREFIX, DEV_NAME, "f0eb"); // network name, имя устройства, иконка
 
 bool wifi_connected = false;
+bool display_IP_on_the_strip = true;
 
 // ========= UI
 
@@ -57,12 +61,16 @@ double ui_pot2_value = 0;
 double ui_pot3_value = 0;
 int ui_brightness_pot_value = 50;
 
-uint32_t ui_selected_color;
+uint32_t ui_selected_main_color;
 bool ui_current_effect_enabled = true;
 
 int ui_2d_effects_color_mode;
 bool ui_2d_effects_color_mode_is_inverted;
+bool ui_fill_effect_color_mode_is_wavy;
+bool ui_fill_effect_color_mode_is_noisy;
 
+String ui_custom_palette_name;
+int prev_ui_selected_custom_palette;
 int ui_selected_custom_palette;
 int ui_current_loaded_custom_palette[16];
 
@@ -114,7 +122,7 @@ Button btn(button_pin);
 #define HEIGHT 256;
 CRGB leds[NUM_LEDS];
 
-int brightness_level = 0;
+int current_brightness_level = 0;
 
 // 2D MAP
 
@@ -274,15 +282,25 @@ const TProgmemRGBPalette16 SunsetColors_p FL_PROGMEM = {
     0xff6800, 0xffa800, 0x871612, 0xa71612,
     0xc71612, 0x540027, 0x640027, 0x740027};
 
-const TProgmemRGBPalette16 *all_pallets[16] = {&OceanColors_p, &LavaColors_p, &ForestColors_p, &PartyColors_p, &RainbowColors_p,
-                                               &MagmaColor_p, &WoodFireColors_p, &NormalFire_p, &NormalFire2_p,
-                                               &LithiumFireColors_p, &SodiumFireColors_p, &CopperFireColors_p,
-                                               &AlcoholFireColors_p, &PotassiumFireColors_p, &SunsetColors_p, &EndeavourColors_p};
+#define NUM_STATIC_PALETTES 16
+#define NUM_USER_PALETTES 10
 
-const auto all_palettes_str = "Ocean;Lava;Forest;Party;Rainbow;Magma;WoodFire;Fire;Fire2;Lithium;Sodium;Copper;Alcohol;Potassium;Sunset;Endeavour";
+const TProgmemRGBPalette16 *all_palettes[NUM_STATIC_PALETTES] = {&OceanColors_p, &LavaColors_p, &ForestColors_p, &PartyColors_p, &RainbowColors_p,
+                                                                 &MagmaColor_p, &WoodFireColors_p, &NormalFire_p, &NormalFire2_p,
+                                                                 &LithiumFireColors_p, &SodiumFireColors_p, &CopperFireColors_p,
+                                                                 &AlcoholFireColors_p, &PotassiumFireColors_p, &SunsetColors_p, &EndeavourColors_p};
+
+const char *all_palettes_str_arr[NUM_STATIC_PALETTES] = {
+    "🌊 Ocean", "🟧 Lava", "🌲 Forest",
+    "🪩 Party", "🌈 Rainbow", "🟥 Magma",
+    "🪵 Wood fire", "🔥 Fire", "🔥 Fire 2",
+    "🔋 Lithium", "🧂 Sodium", "⚙️ Copper",
+    "🍸 Alcohol", "🧪 Potassium", "🌇 Sunset",
+    "🟪 Endeavour"};
+
+CRGBPalette16 current_rendered_custom_palette;
+bool current_custom_palette_is_2d;
 bool should_reload_custom_pallette; // Flag to tell display_palette function to reload palette
-
-
 
 // ========= EFFECTS
 
@@ -294,7 +312,7 @@ bool should_reload_custom_pallette; // Flag to tell display_palette function to 
 // Rain
 // Sea sailing
 
-enum EffectMode : int {
+enum EffectMode : uint8_t {
     Static = 0,
     Twinkle = 1,
     CustomPalette = 2,
@@ -316,9 +334,14 @@ enum EffectMode : int {
     UserShader1 = 18
 };
 
-const auto effect_modes_str = "Static;Twinkle;CustomPalette;Rainbow;Forest;Lava;Ocean;Sunset;Potassium;Party;Rainbow2D;Forest2D;Lava2D;Ocean2D;Sunset2D;Potassium2D;Party2D;Police;UserShader1";
+const char *effect_modes_str_arr[EffectMode::UserShader1 + 1] = {
+    "Static 🗿", "Twinkle ✨", "Custom palette 🎨",
+    "Rainbow 🌈", "Forest 🌲", "Lava 🟧", "Ocean 🌊", "Sunset 🌇",
+    "Potassium 🧪", "Party 🪩", "Rainbow 2D 🌈+", "Forest 2D 🌲+",
+    "Lava 2D 🟧+", "Ocean 2D 🌊+", "Sunset 2D 🌇+", "Potassium 2D 🧪+",
+    "Party 2D 🪩+", "Police 🚨", "User shader 1 🔨"};
 
-enum _2DEffectType : int {
+enum _2DEffectType : uint8_t {
     RightDiagonal = 0,
     RightDiagonalBackwards = 2,
     LeftDiagonal = 1,
@@ -339,7 +362,7 @@ enum _2DEffectType : int {
     Mixed2_Inverted = 17
 };
 
-const auto _2d_effect_types_str = "RightDiagonal;LeftDiagonal;Up;Left;CenterOutward;Clockwise;SpiralClockwise;Mixed1;Mixed2";
+const auto _2d_effect_types_str = "Right diagonal ⬊;Left diagonal ⬋;Up ⬆;Left ⬅;Center outward ⭗;Clockwise 🗘;Spiral clockwise ⥁;Mixed 1 ⥺;Mixed 2 ⭚";
 
 int police_frame = 0;
 int police_frames_per_color = 2;
@@ -347,6 +370,9 @@ int police_flashes = 2; // 2 per flashes color
 
 const CRGB police_color1 = CRGB::Red;
 const CRGB police_color2 = CRGB::Blue;
+
+#define BLUR_AMOUNT 64
+#define MAX_SPEED_BPH 210
 
 // ========= STORAGE
 
@@ -357,6 +383,7 @@ struct WiFiFSData {
 WiFiFSData wifi_fsdata;
 FileData wifi_fsdata_handle(&LittleFS, "/wifi.dat", 'B', &wifi_fsdata, sizeof(wifi_fsdata));
 
+// TODO: Switch between custom palettes when clicking the button
 struct GeneralSettingsFSData {
     uint32_t chosen_ui_effects = 0xFFFFFFFF;
     uint32_t var1_reserved = 0;
@@ -374,9 +401,14 @@ struct _2DEffectsFSData {
 _2DEffectsFSData _2d_effects_fsdata;
 FileData _2d_effects_fsdata_handle(&LittleFS, "/effect_settings-2d.dat", 'B', &_2d_effects_fsdata, sizeof(_2d_effects_fsdata));
 
+#define MAX_CUSTOM_PALETTE_NAME 24
+class NamedPalette : public CRGBPalette16 {
+  public:
+    char name[MAX_CUSTOM_PALETTE_NAME + 1] = " = = = EMPTY SLOT = = = ";
+};
+
 struct CustomPaletteEffectFSData {
-    CRGBPalette16 current_custom_palette;
-    bool current_custom_palette_is_2d;
+    NamedPalette user_custom_palettes[NUM_USER_PALETTES];
 };
 CustomPaletteEffectFSData custom_palette_effect_fsdata;
 FileData custom_palette_effect_fsdata_handle(&LittleFS, "/effect_settings-custom_palette.dat", 'B', &custom_palette_effect_fsdata, sizeof(custom_palette_effect_fsdata));
@@ -387,6 +419,7 @@ struct TwinkleEffectFSData {
     uint8_t twinkle_fadeout_frames = 15;
     double twinkle_fadeout_speed = 1.03;
     double twinkle_fadein_speed = 1.05;
+    uint16_t twinkle_number = NUM_LEDS / 10;
 };
 TwinkleEffectFSData twinkle_effect_fsdata;
 FileData twinkle_effect_fsdata_handle(&LittleFS, "/effect_settings-twinkle.dat", 'B', &twinkle_effect_fsdata, sizeof(twinkle_effect_fsdata));
@@ -400,23 +433,25 @@ int current_mode = EffectMode::Static;
 // ========= MAIN CODE STARTS HERE
 
 int current_status_led = 11;
-void update_status_led(const CRGB &col) {
+void update_status_led(const CRGB &col, bool show = true) {
     leds[current_status_led] = col;
-    FastLED.show();
+    if (show) {
+        FastLED.show();
+    }
     current_status_led += 2;
     current_status_led = current_status_led % NUM_LEDS;
 }
 
-bool is_current_effect_enabled_in_manual_switch() {
-    return general_fsdata.chosen_ui_effects & (1 << current_mode);
+bool is_effect_mode_enabled_in_manual_switch(int mode) {
+    return general_fsdata.chosen_ui_effects & (1 << mode);
 }
 
-void enable_current_effect_manual_switch() {
-    if (is_current_effect_enabled_in_manual_switch() && ui_current_effect_enabled) {
+void set_current_effect_enabled_in_manual_switch(bool target_state) {
+    if (is_effect_mode_enabled_in_manual_switch(current_mode) == target_state) {
         return;
     }
     general_fsdata.chosen_ui_effects ^= (1 << current_mode);
-    save_to_fs(false);
+    general_fsdata_handle.update();
 }
 
 void setup_file_in_fs(FileData &handle) {
@@ -458,16 +493,6 @@ void init_fs() {
 
     ui_2d_effects_color_mode_is_inverted = _2d_effects_fsdata._2d_effects_color_mode % 2 != 0;
     ui_2d_effects_color_mode = floor(_2d_effects_fsdata._2d_effects_color_mode / 2);
-}
-
-void save_to_fs(bool now) {
-    for (auto filedata : filedatas) {
-        if (now) {
-            filedata->updateNow();
-        } else {
-            filedata->update();
-        }
-    }
 }
 
 void try_connect_to_wifi() {
@@ -549,95 +574,213 @@ void try_connect_to_wifi() {
     }
 }
 
+void copy_str_with_len_limit(String &source, char *target, int max_len) {
+    auto truncated_str = source.substring(0, max_len);
+    strcpy(target, truncated_str.c_str());
+    target[truncated_str.length()] = '\0';
+}
+
+// This may be called often, cache it
+String effect_mode_str_cache;
+uint32_t prev_chosen_ui_effects;
+String build_effect_modes_str() {
+    if (prev_chosen_ui_effects == general_fsdata.chosen_ui_effects) {
+        return effect_mode_str_cache;
+    }
+    String ret;
+    for (uint8_t mode_n = EffectMode::Static; mode_n < EffectMode::UserShader1 + 1; mode_n++) {
+        ret += is_effect_mode_enabled_in_manual_switch(mode_n) ? "[▣] " : "[□] ";
+        ret += effect_modes_str_arr[mode_n];
+        if (mode_n != EffectMode::UserShader1) {
+            ret += ";";
+        }
+    }
+    prev_chosen_ui_effects = general_fsdata.chosen_ui_effects;
+    effect_mode_str_cache = ret;
+    return ret;
+}
+
+// This may be called often, cache it
+String palettes_str_cache;
+bool should_update_palette_selector = true;
+String build_palettes_str() {
+    if (!should_update_palette_selector) {
+        return palettes_str_cache;
+    }
+    String ret = " << Select or edit a preset >> ;";
+    for (uint8_t palette_n = 0; palette_n < NUM_STATIC_PALETTES; palette_n++) {
+        ret += all_palettes_str_arr[palette_n];
+        ret += ";";
+    }
+    for (uint8_t palette_n = 0; palette_n < NUM_USER_PALETTES; palette_n++) {
+        ret += "[U] ";
+        ret += custom_palette_effect_fsdata.user_custom_palettes[palette_n].name;
+        if (palette_n != NUM_USER_PALETTES - 1) {
+            ret += ";";
+        }
+    }
+    should_update_palette_selector = false;
+    palettes_str_cache = ret;
+    return ret;
+}
+
+void save_current_palette_to_current_user_preset() {
+    if (ui_selected_custom_palette > NUM_STATIC_PALETTES) {
+        // Save user palette
+        NamedPalette &preset = custom_palette_effect_fsdata.user_custom_palettes[ui_selected_custom_palette - NUM_STATIC_PALETTES - 1];
+
+        copy_str_with_len_limit(ui_custom_palette_name, preset.name, MAX_CUSTOM_PALETTE_NAME);
+
+        for (uint8_t i = 0; i < 16; i++) {
+            preset[i] = current_rendered_custom_palette.entries[i];
+        }
+
+        custom_palette_effect_fsdata_handle.update();
+        should_update_palette_selector = true;
+    }
+}
+
 void load_custom_palette_from_preset_in_ui() {
-    const TProgmemRGBPalette16 &preset = *all_pallets[ui_selected_custom_palette];
-    for (uint8_t i = 0; i < 16; i++) {
-        ui_current_loaded_custom_palette[i] = preset[i];
-        custom_palette_effect_fsdata.current_custom_palette.entries[i] = preset[i];
+    if (ui_selected_custom_palette == 0) {
+        // This is a special palette just saying "Click to load the palette", when selecting a palette in the ui,
+        // this var is reset to previous value to allow loading the same preset twice or loading a palette into a user preset
+        ui_selected_custom_palette = ui_selected_custom_palette + 1;
+        // Just load the next palette
+    }
+    if (ui_selected_custom_palette > NUM_STATIC_PALETTES) {
+        // Load user palette
+        const NamedPalette &preset = custom_palette_effect_fsdata.user_custom_palettes[ui_selected_custom_palette - NUM_STATIC_PALETTES - 1];
+        for (uint8_t i = 0; i < 16; i++) {
+            ui_current_loaded_custom_palette[i] = RGB_PACKED(preset[i].r, preset[i].g, preset[i].b);
+            current_rendered_custom_palette.entries[i] = preset[i];
+        }
+        // Don't reset the selection, let the user edit the preset
+        ui_custom_palette_name = preset.name;
+    } else {
+        const TProgmemRGBPalette16 &preset = *all_palettes[ui_selected_custom_palette - 1];
+        for (uint8_t i = 0; i < 16; i++) {
+            ui_current_loaded_custom_palette[i] = preset[i];
+            current_rendered_custom_palette.entries[i] = preset[i];
+        }
+        ui_selected_custom_palette = prev_ui_selected_custom_palette; // Reset, refer to the top comment in the function why
     }
     // Tell the palette display function to reload palette
     should_reload_custom_pallette = true;
-    save_to_fs(false);
 }
 
 void load_actual_custom_palette_from_ui() {
     for (uint8_t i = 0; i < 16; i++) {
-        custom_palette_effect_fsdata.current_custom_palette.entries[i] = ui_current_loaded_custom_palette[i];
+        current_rendered_custom_palette.entries[i] = ui_current_loaded_custom_palette[i];
     }
     should_reload_custom_pallette = true;
-    save_to_fs(false);
 }
 
 void display_palette_selector(gh::Builder &b) {
     b.Label("Palette").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
 
-    if (b.Select(&ui_selected_custom_palette).text(all_palettes_str).label("Preset").click()) {
+    prev_ui_selected_custom_palette = ui_selected_custom_palette;
+    if (b.Select(&ui_selected_custom_palette).text(build_palettes_str()).label("Preset").click()) {
         load_custom_palette_from_preset_in_ui();
         b.refresh();
     }
 
     for (uint8_t x = 0; x < 4; x++) {
-        b.beginRow();
-        for (uint8_t y = 0; y < 4; y++) {
-            if (b.Color(&ui_current_loaded_custom_palette[x * 4 + y]).noLabel().click()) {
-                load_actual_custom_palette_from_ui();
+        {
+            gh::Row r(b);
+
+            for (uint8_t y = 0; y < 4; y++) {
+                uint8_t color_index = x * 4 + y;
+                if (ui_selected_custom_palette > NUM_STATIC_PALETTES) {
+                    if (b.Color(&ui_current_loaded_custom_palette[color_index]).noLabel().click()) {
+                        load_actual_custom_palette_from_ui();
+                    }
+                } else {
+                    b.LED().value(1).noLabel().color(ui_current_loaded_custom_palette[color_index]);
+                }
             }
         }
-        b.endRow();
+    }
+
+    if (ui_selected_custom_palette > NUM_STATIC_PALETTES) {
+        {
+            gh::Row r(b);
+
+            b.Input(&ui_custom_palette_name).maxLen(MAX_CUSTOM_PALETTE_NAME).label("Name");
+            if (b.Button().label("Save").icon("f067").click()) {
+                save_current_palette_to_current_user_preset();
+                b.refresh();
+            }
+        }
+    }
+}
+
+void display_wavy_switch(gh::Builder &b) {
+    if (b.Switch(&ui_fill_effect_color_mode_is_wavy).label("Wavy 〜").color(gh::Colors::Yellow).click()) {
+        b.refresh();
+    }
+}
+
+void display_noisy_switch(gh::Builder &b) {
+    if (b.Switch(&ui_fill_effect_color_mode_is_noisy).label("Noisy ░▒▓▐").color(gh::Colors::Red).click()) {
+        b.refresh();
     }
 }
 
 void display_2d_mode_settings(gh::Builder &b) {
-    b.Label("More 2d-palette-fill mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
+    bool color_mode_dropdown = b.Select(&ui_2d_effects_color_mode).text(_2d_effect_types_str).label("Mode").click();
     {
         gh::Row r(b);
 
-        bool color_mode_inverted = b.Select(&ui_2d_effects_color_mode).text(_2d_effect_types_str).label("Mode").click();
-        bool color_mode_dropdown = b.Switch(&ui_2d_effects_color_mode_is_inverted).label("Invert").color(gh::Colors::Mint).click();
+        bool color_mode_inverted = b.Switch(&ui_2d_effects_color_mode_is_inverted).label("Invert ◪").color(gh::Colors::Mint).click();
+
+        display_wavy_switch(b);
+        display_noisy_switch(b);
 
         if (color_mode_dropdown || color_mode_inverted) {
             _2d_effects_fsdata._2d_effects_color_mode = (_2DEffectType)(2 * ui_2d_effects_color_mode + ui_2d_effects_color_mode_is_inverted);
-            save_to_fs(false);
+            _2d_effects_fsdata_handle.update();
             b.refresh();
         }
+    }
+}
+
+void build_wifi_connection_ui(gh::Builder &b) {
+    b.Title("WIFI SETUP");
+
+    b.Input(&ui_input_ssid).maxLen(MAX_SSID_LEN).label("SSID");
+    b.Input(&ui_input_password).maxLen(MAX_PASSPHRASE_LEN).label("PASSWORD");
+
+    if (b.Button().label("Save").icon("f1eb").click()) {
+
+        copy_str_with_len_limit(ui_input_ssid, wifi_fsdata.ssid, MAX_SSID_LEN);
+        copy_str_with_len_limit(ui_input_password, wifi_fsdata.password, MAX_PASSPHRASE_LEN);
+
+        wifi_fsdata_handle.updateNow();
+        try_connect_to_wifi();
     }
 }
 
 void build_ui(gh::Builder &b) {
 
-    ui_current_effect_enabled = is_current_effect_enabled_in_manual_switch();
-
     if (!wifi_connected) {
-
-        b.Title("WIFI SETUP");
-
-        b.Input(&ui_input_ssid).maxLen(MAX_SSID_LEN).label("SSID");
-        b.Input(&ui_input_password).maxLen(MAX_PASSPHRASE_LEN).label("PASSWORD");
-
-        if (b.Button().label("Save").text("Save").icon("f1eb").click()) {
-
-            strcpy(wifi_fsdata.ssid, ui_input_ssid.c_str());
-            wifi_fsdata.ssid[strlen(ui_input_ssid.c_str())] = '\0';
-
-            strcpy(wifi_fsdata.password, ui_input_password.c_str());
-            wifi_fsdata.password[strlen(ui_input_password.c_str())] = '\0';
-
-            save_to_fs(true);
-            try_connect_to_wifi();
-        }
-
+        build_wifi_connection_ui(b);
     } else {
+        display_IP_on_the_strip = false;
+        ui_current_effect_enabled = is_effect_mode_enabled_in_manual_switch(current_mode);
+
+        b.Plugin("styler", "/style_widget.js");
+        b.Widget_("st", "styler");
+
         b.Title("SNORK CONTROLLER 9000").fontSize(25);
 
-        if (b.Select(&current_mode).text(effect_modes_str).label("Mode").click()) {
+        if (b.Select(&current_mode).text(build_effect_modes_str()).label("Mode").click()) {
             b.refresh();
-            save_to_fs(false);
         }
 
         {
             gh::Row r(b);
             if (b.Switch(&ui_current_effect_enabled).label("Include in manual switcher").color(gh::Colors::Orange).click()) {
-                enable_current_effect_manual_switch();
+                set_current_effect_enabled_in_manual_switch(ui_current_effect_enabled);
                 b.refresh();
             }
 
@@ -686,17 +829,30 @@ void build_ui(gh::Builder &b) {
             color2 = gh::Colors::Mint;
             color3 = gh::Colors::Pink;
 
+            b.Space(2, 2);
+
             if (current_mode == EffectMode::CustomPalette) {
 
-                if (b.Switch(&custom_palette_effect_fsdata.current_custom_palette_is_2d).color(gh::Colors::Mint).label("2D").click()) {
+                if (b.Switch(&current_custom_palette_is_2d).color(gh::Colors::Mint).label("2D 🕶️").click()) {
                     b.refresh();
-                    save_to_fs(false);
                 }
 
                 display_palette_selector(b);
 
-                if (custom_palette_effect_fsdata.current_custom_palette_is_2d) {
+                if (current_custom_palette_is_2d) {
                     display_2d_mode_settings(b);
+                } else {
+                    {
+                        gh::Row r(b);
+                        display_wavy_switch(b);
+                        display_noisy_switch(b);
+                    }
+                }
+            } else {
+                {
+                    gh::Row r(b);
+                    display_wavy_switch(b);
+                    display_noisy_switch(b);
                 }
             }
 
@@ -718,8 +874,8 @@ void build_ui(gh::Builder &b) {
             color2 = gh::Colors::Mint;
             color3 = gh::Colors::Pink;
 
+            b.Space(2, 2);
             display_2d_mode_settings(b);
-
             b.Space(2, 2);
             break;
 
@@ -733,7 +889,9 @@ void build_ui(gh::Builder &b) {
             color2 = gh::Colors::Green;
             color3 = gh::Colors::Blue;
 
+            b.Space(2, 2);
             b.Slider(&ui_shader1_attenuation_amount).range(1, 2, 0.1).unit("").color(gh::Colors::Aqua).label("Attenuation");
+            b.Space(2, 2);
             break;
 
         default:
@@ -751,8 +909,8 @@ void build_ui(gh::Builder &b) {
         if (current_mode == EffectMode::Twinkle) {
             b.Label("Additional twinkle mode settings").fontSize(20).align(gh::Align::Left).noTab().noLabel().size(10, 10);
             if (b.Color(&twinkle_effect_fsdata.twinkle_backdrop_effect_color).label("Background color").click()) {
+                twinkle_effect_fsdata_handle.update();
                 b.refresh();
-                save_to_fs(false);
             }
             {
                 gh::Row r(b);
@@ -764,7 +922,10 @@ void build_ui(gh::Builder &b) {
                 b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_frames).range(10, 40, 1).unit("").color(gh::Colors::Orange).label("Fadeout frames");
                 b.Slider(&twinkle_effect_fsdata.twinkle_fadeout_speed).range(1.01, 1.2, 0.01).unit("").color(gh::Colors::Yellow).label("Fadeout speed");
             }
-            b.Label().noTab().noLabel().disabled().size(1, 1);
+
+            b.Slider(&twinkle_effect_fsdata.twinkle_number).range(1, NUM_LEDS / 4, 1).unit("").color(gh::Colors::Pink).label("Number of twinkles");
+
+            b.Space(2, 2);
         }
 
         if (ui_manual_mode) {
@@ -778,10 +939,10 @@ void build_ui(gh::Builder &b) {
 
             if (color_selector_enabled) {
                 b.beginRow();
-                if (b.Color(&ui_selected_color).click()) {
-                    ui_pot1_value = UNPACK_R(ui_selected_color) / 255.0;
-                    ui_pot2_value = UNPACK_G(ui_selected_color) / 255.0;
-                    ui_pot3_value = UNPACK_B(ui_selected_color) / 255.0;
+                if (b.Color(&ui_selected_main_color).click()) {
+                    ui_pot1_value = UNPACK_R(ui_selected_main_color) / 255.0;
+                    ui_pot2_value = UNPACK_G(ui_selected_main_color) / 255.0;
+                    ui_pot3_value = UNPACK_B(ui_selected_main_color) / 255.0;
                     b.refresh();
                 }
             }
@@ -815,10 +976,16 @@ void build_ui(gh::Builder &b) {
     }
 }
 
+const uint8_t style_widget_src[] = "class Styler extends BaseWidget {\nstatic wtype = 'styler';\n$el;\nconstructor(data, renderer) {\nsuper(data, renderer);\nthis.makeLayout({\ntag: 'div',\nclass: 'hidden',\nchildren: []\n});\nthis.update(data);\n}\nupdate(data) {\nsuper.update(data);\n}\nstatic style = `\n.widget-main:has(.hidden), .notice {\ndisplay: none;\n}`;\n}";
+
 void init_webui() {
     hub.setVersion(VERSION);
     hub.onBuild(build_ui);
+    hub.setBufferSize(2000);
     hub.begin();
+
+    auto f = gh::FS.openWrite("/style_widget.js");
+    f.write(style_widget_src, sizeof(style_widget_src) - 1);
 
     load_custom_palette_from_preset_in_ui();
 
@@ -883,7 +1050,7 @@ void read_pot(int pin, double *value, int max_value) {
 
 // EFFECT FUNCS
 
-#pragma region helper_funcs
+#pragma region helper_effect_funcs
 
 double fract(double x) { return x - int(x); }
 
@@ -932,23 +1099,23 @@ uint16_t u16_from_u8(uint8_t in) {
 uint16_t get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
     switch (effect_type) {
     case _2DEffectType::RightDiagonal:
-        return u16_from_u8(coordsX[index] - coordsY[index]);
+        return u16_from_u8(coordsX[index] + coordsY[index]);
     case _2DEffectType::LeftDiagonal:
-        return u16_from_u8(((uint16_t)coordsX[index] + (uint16_t)coordsY[index]) / 2);
+        return u16_from_u8(coordsX[index] - coordsY[index]);
     case _2DEffectType::Up:
         return u16_from_u8(coordsY[index]);
     case _2DEffectType::Left:
-        return u16_from_u8(255 - coordsX[index]);
+        return u16_from_u8(coordsX[index]);
     case _2DEffectType::CenterOutward:
-        return u16_from_u8(255 - radii[index]);
+        return u16_from_u8(UINT8_MAX - radii[index]);
     case _2DEffectType::Clockwise:
-        return u16_from_u8(angles[index]);
+        return u16_from_u8(UINT8_MAX - angles[index]);
     case _2DEffectType::SpiralClockwise:
         return (uint16_t)angles[index] * (uint16_t)radii[index];
     case _2DEffectType::Mixed1:
-        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::SpiralClockwise, index) + (uint32_t)get_2d_palette_phase_offset(_2DEffectType::SpiralCounterClockwise, index)) / 2;
+        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::CenterOutward, index) * (uint32_t)get_2d_palette_phase_offset(_2DEffectType::Clockwise, index)) / UINT16_MAX;
     case _2DEffectType::Mixed2:
-        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::Up, index) + (uint32_t)get_2d_palette_phase_offset(_2DEffectType::Clockwise, index)) / 2;
+        return ((uint32_t)get_2d_palette_phase_offset(_2DEffectType::Up, index) * (uint32_t)get_2d_palette_phase_offset(_2DEffectType::Clockwise, index)) / UINT16_MAX;
     case _2DEffectType::Down:
     case _2DEffectType::Right:
     case _2DEffectType::LeftDiagonalBackwards:
@@ -969,6 +1136,14 @@ uint16_t get_2d_palette_phase_offset(_2DEffectType effect_type, int index) {
 LIB8STATIC uint32_t beat16_hour_raw_32(uint16_t beats_per_hour) {
     // 1195 = 4.66666667 (to convert to beats per 65536ms (16 uint max), from beat88) * 256 ( << 8 )
     return millis() * beats_per_hour * 1195;
+}
+
+uint16_t wavify(uint16_t in) {
+    return (((uint32_t)in) * (sin16(in) + UINT16_MAX_HALF)) / UINT16_MAX;
+}
+
+uint16_t noiseify(uint16_t in) {
+    return inoise16(in * 2);
 }
 
 uint16_t prev_color_bph;
@@ -998,7 +1173,7 @@ void display_color_palette(T &pal,
     }
 
     squish = squish * 2 + 0.1;
-    uint16_t color_bph = 150 * speed;
+    uint16_t color_bph = MAX_SPEED_BPH * speed;
     // Prevent initial phase shift
     if (prev_color_bph == 0) {
         prev_color_bph = color_bph;
@@ -1020,13 +1195,26 @@ void display_color_palette(T &pal,
 
     if (IS_FLAT) {
         for (uint16_t i = 0; i < NUM_LEDS; i++) {
+            uint16_t color_phase = i;
+            if (ui_fill_effect_color_mode_is_wavy) {
+                color_phase = wavify(color_phase);
+            }
+            if (ui_fill_effect_color_mode_is_noisy) {
+                color_phase = noiseify(color_phase);
+            }
             leds[i] = ColorFromPalette(currently_displayed_color_palette,
-                                       ((uint16_t)(current_frame_color_beat + i * squish * (UINT16_MAX / NUM_LEDS))) >> 8);
+                                       ((uint16_t)(current_frame_color_beat + color_phase * squish * (UINT16_MAX / NUM_LEDS))) >> 8);
         }
     } else {
         for (uint16_t i = 0; i < NUM_LEDS; i++) {
             uint16_t color_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_color_mode, i);
-            uint16_t brightness_phase = get_2d_palette_phase_offset(_2d_effects_fsdata._2d_effects_brightness_mode, i);
+
+            if (ui_fill_effect_color_mode_is_wavy) {
+                color_phase = wavify(color_phase);
+            }
+            if (ui_fill_effect_color_mode_is_noisy) {
+                color_phase = noiseify(color_phase);
+            }
 
             leds[i] = ColorFromPalette(currently_displayed_color_palette,
                                        ((uint16_t)(current_frame_color_beat + color_phase * squish)) >> 8);
@@ -1057,7 +1245,7 @@ void single_sparkle(int pixel_index) {
 void twinkle(CRGB col) {
     if (sparkle_pos == -twinkle_effect_fsdata.twinkle_fadein_frames) {
         current_sparkle_targets.clear();
-        for (int i = 0; i < NUM_LEDS / 10; i++) {
+        for (int i = 0; i < twinkle_effect_fsdata.twinkle_number; i++) {
             single_sparkle(random(NUM_LEDS));
         }
     }
@@ -1080,9 +1268,9 @@ void twinkle(CRGB col) {
     for (uint16_t i = 0; i < NUM_LEDS; i++) {
         target_color = current_sparkle_targets.find(i) == current_sparkle_targets.end() ? CRGB::Black : col;
 
-        leds[i].r = constrain(target_color.r * current_twinkle_fade_amount + UNPACK_R(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
-        leds[i].g = constrain(target_color.g * current_twinkle_fade_amount + UNPACK_G(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
-        leds[i].b = constrain(target_color.b * current_twinkle_fade_amount + UNPACK_B(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, 255);
+        leds[i].r = constrain(target_color.r * current_twinkle_fade_amount + UNPACK_R(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, UINT8_MAX);
+        leds[i].g = constrain(target_color.g * current_twinkle_fade_amount + UNPACK_G(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, UINT8_MAX);
+        leds[i].b = constrain(target_color.b * current_twinkle_fade_amount + UNPACK_B(twinkle_effect_fsdata.twinkle_backdrop_effect_color), 0, UINT8_MAX);
     }
 
     FastLED.show();
@@ -1111,7 +1299,7 @@ void render_police() {
         police_frame = 0;
     }
 
-    blur1d(leds, NUM_LEDS, 64);
+    blur1d(leds, NUM_LEDS, BLUR_AMOUNT);
 }
 
 #pragma endregion
@@ -1127,41 +1315,48 @@ uint16_t attenuated_sin16(uint16_t theta) {
 
 void render_shader1(double speed_r, double speed_g, double speed_b) {
     double u = ui_shader1_attenuation_amount;
-    uint16_t offset_r = beat16_hour_raw_32(120 * speed_r) >> 16;
-    uint16_t offset_g = beat16_hour_raw_32(120 * speed_g) >> 16;
-    uint16_t offset_b = beat16_hour_raw_32(120 * speed_b) >> 16;
+    uint16_t offset_r = beat16_hour_raw_32(MAX_SPEED_BPH * speed_r) >> 16;
+    uint16_t offset_g = beat16_hour_raw_32(MAX_SPEED_BPH * speed_g) >> 16;
+    uint16_t offset_b = beat16_hour_raw_32(MAX_SPEED_BPH * speed_b) >> 16;
     for (uint16_t i = 0; i < NUM_LEDS; i++) {
         leds[i].r = attenuated_sin16(u16_from_u8(coordsX[i]) + offset_r) >> 8;
         leds[i].g = attenuated_sin16(u16_from_u8(coordsY[i]) + offset_g) >> 8;
         leds[i].b = attenuated_sin16(u16_from_u8(angles[i]) + offset_b) >> 8;
     }
 
-    blur1d(leds, NUM_LEDS, 64);
+    blur1d(leds, NUM_LEDS, BLUR_AMOUNT);
 }
 
 #pragma endregion
 
 #pragma region update_funcs
 
-void update_brightness() {
+// Returns true when the power state was changed
+bool update_brightness() {
     double brightness_source = ui_manual_mode ? (1.0 - brightness_pot_value) : ui_brightness_pot_value / 100.0;
 
-    brightness_level = round(brightness_level * (1 - BRIGHTNESS_SMOOTHING) + brightness_source * MAX_BRIGHT * BRIGHTNESS_SMOOTHING);
+    current_brightness_level = round(current_brightness_level * (1 - BRIGHTNESS_SMOOTHING) + brightness_source * MAX_BRIGHT * BRIGHTNESS_SMOOTHING);
 
-    if (brightness_level == 0 || power_switch_value == LOW) {
+    bool power_state_changed = false;
+
+    if (current_brightness_level == 0 || power_switch_value == LOW) {
         if (current_power_state != PowerState::OFF) {
             digitalWrite(transistor_pin, LOW);
             pinMode(STRIP_PIN, INPUT);
             current_power_state = PowerState::OFF;
+            power_state_changed = true;
         }
     } else {
         if (current_power_state != PowerState::ON) {
             pinMode(STRIP_PIN, OUTPUT);
             digitalWrite(transistor_pin, HIGH);
             current_power_state = PowerState::ON;
+            power_state_changed = true;
         }
-        FastLED.setBrightness(brightness_level);
+        FastLED.setBrightness(current_brightness_level);
     }
+
+    return power_state_changed;
 }
 
 void update_effects() {
@@ -1178,13 +1373,13 @@ void update_effects() {
 
     switch (current_mode) {
     case EffectMode::Static:
-        fill_color(CRGB(parameter1 * 255, parameter2 * 255, parameter3 * 255));
+        fill_color(CRGB(parameter1 * UINT8_MAX, parameter2 * UINT8_MAX, parameter3 * UINT8_MAX));
         break;
     case EffectMode::CustomPalette:
-        if (custom_palette_effect_fsdata.current_custom_palette_is_2d) {
-            display_color_palette<false>(custom_palette_effect_fsdata.current_custom_palette, parameter1, parameter2, parameter3);
+        if (current_custom_palette_is_2d) {
+            display_color_palette<false>(current_rendered_custom_palette, parameter1, parameter2, parameter3);
         } else {
-            display_color_palette<true>(custom_palette_effect_fsdata.current_custom_palette, parameter1, parameter2, parameter3);
+            display_color_palette<true>(current_rendered_custom_palette, parameter1, parameter2, parameter3);
         }
         break;
     case EffectMode::Rainbow:
@@ -1209,7 +1404,7 @@ void update_effects() {
         display_color_palette<true>(PartyColors_p, parameter1, parameter2, parameter3);
         break;
     case EffectMode::Twinkle:
-        twinkle(CRGB(parameter1 * 255, parameter2 * 255, parameter3 * 255));
+        twinkle(CRGB(parameter1 * UINT8_MAX, parameter2 * UINT8_MAX, parameter3 * UINT8_MAX));
         break;
     case EffectMode::Rainbow2D:
         display_color_palette<false>(RainbowColors_p, parameter1, parameter2, parameter3);
@@ -1247,6 +1442,66 @@ void update_effects() {
 
 #pragma endregion
 
+#pragma region display_ip
+
+void show_ip_on_strip() {
+
+    // Offset to start al the longest continuous section
+    current_status_led = 88;
+
+    fill_color(CRGB::Black);
+
+    IPAddress ip = WiFi.localIP();
+    if (ip._address.dword == 0) {
+        update_status_led(CRGB::Red, false);
+        update_status_led(CRGB::Red, false);
+        update_status_led(CRGB::Red, false);
+        // No IP :((
+        return;
+    }
+
+    auto raw = ip._address.bytes;
+
+    uint8_t individual_nums[3];
+    uint8_t octet_;
+    for (uint8_t octet_index = 0; octet_index < 4; octet_index++) {
+        octet_ = raw[octet_index];
+        individual_nums[2] = octet_ % 10;
+        octet_ /= 10;
+        individual_nums[1] = octet_ % 10;
+        octet_ /= 10;
+        individual_nums[0] = octet_;
+
+        for (uint8_t individual_num_index = 0; individual_num_index < 3; individual_num_index++) {
+            uint8_t individual_num = individual_nums[individual_num_index];
+
+            if (individual_num == 0) {
+                // Display a black spot if the number is 0
+                update_status_led(CRGB::Black, false);
+                update_status_led(CRGB::Black, false);
+            } else {
+                for (uint8_t led_l = 0; led_l < individual_num; led_l++) {
+                    update_status_led(CRGB::Red, false);
+                    update_status_led(CRGB::Black, false);
+                }
+            }
+
+            if (individual_num_index < 2) {
+                update_status_led(CRGB::Green, false);
+                update_status_led(CRGB::Black, false);
+            }
+        }
+        if (octet_index < 3) {
+            update_status_led(CRGB::Blue, false);
+            update_status_led(CRGB::Black, false);
+        }
+    }
+
+    FastLED.show();
+}
+
+#pragma endregion
+
 void loop() {
 
     for (auto data : filedatas) {
@@ -1261,16 +1516,31 @@ void loop() {
     read_pot(brightness_pot_pin, &brightness_pot_value, BRIGHTNESS_POT_MAX_ADC_VALUE);
     power_switch_value = digitalRead(power_switch_pin);
 
-    update_brightness();
-    update_effects();
-
-    if (btn.press()) {
-        current_mode++;
-        if (current_mode > EffectMode::Police) {
-            current_mode = EffectMode::Static;
-        }
+    if (update_brightness()) {
+        // When switching on or off, enable manual mode
+        ui_manual_mode = true;
         hub.sendRefresh();
     }
 
-    digitalWrite(button_led_pin, digitalRead(button_pin));
+    if (display_IP_on_the_strip) {
+        show_ip_on_strip();
+        digitalWrite(button_led_pin, !digitalRead(button_pin));
+    } else {
+        update_effects();
+
+        if (btn.press()) {
+            if (general_fsdata.chosen_ui_effects != 0) {
+                do {
+                    current_mode++;
+                } while (!is_effect_mode_enabled_in_manual_switch(current_mode) && current_mode <= EffectMode::Police);
+                if (current_mode > EffectMode::Police) {
+                    current_mode = EffectMode::Static;
+                }
+                hub.sendRefresh();
+            }
+            // No effect enabled, eh
+        }
+
+        digitalWrite(button_led_pin, digitalRead(button_pin));
+    }
 }
