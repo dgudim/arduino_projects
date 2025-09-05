@@ -304,6 +304,7 @@ bool should_reload_custom_pallette; // Flag to tell display_palette function to 
 
 // ========= EFFECTS
 
+// TODO: Add palette reset button
 // TODO: Possible other effects
 // Fire
 // meteor rain
