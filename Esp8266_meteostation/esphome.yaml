@@ -1,0 +1,153 @@
+esphome:
+  name: meteostation
+  friendly_name: Meteostation
+  on_boot:
+    priority: 200  
+    then:
+      - wait_until:  
+          condition:
+            wifi.connected: 
+          timeout: 120s
+
+esp8266:
+  board: d1
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "w1AZANEe4C0qgiSOfF8Z+6SJtvUOJP5l7O76mScqNPM="
+
+ota:
+  - platform: esphome
+    password: "400075c626ab9ad06dd4f438c54339fd"
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: !secret wifi_bssid
+      hidden: True
+      manual_ip:
+        static_ip: 192.168.50.40
+        gateway: 192.168.50.1
+        subnet: 255.255.255.0
+  reboot_timeout: 60s
+  output_power: 19db
+  fast_connect: True
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Meteostation Fallback Hotspot"
+    password: "UTjhId6kAY3Z"
+
+i2c:
+  sda: D14
+  scl: D15
+  frequency: 800kHz
+  scan: true
+
+one_wire:
+  - platform: gpio
+    pin: D9
+
+globals:
+# https://github.com/smart-tech-benin/MG811
+# https://github.com/solvek/CO2Sensor
+- id: voltage_measure1
+  type: double
+  initial_value: "0.343"
+- id: value_measure1
+  type: double
+  initial_value: "400"
+- id: voltage_measure2
+  type: double
+  initial_value: "0.1951"
+- id: value_measure2
+  type: double
+  initial_value: "40000"
+- id: v_comp
+  type: double
+  restore_value: True
+  initial_value: "0"
+
+sensor:
+  - platform: bmp085
+    temperature:
+      name: "Case temperature"
+      filters:
+        - lambda: 'return x - 2.6;' # Compensation
+    pressure:
+      name: "Atmospheric pressure"
+    update_interval: 60s
+  - platform: dht
+    pin: D8
+    temperature:
+      name: "Bedroom temperature"
+      filters:
+        - lambda: 'return x - 4.7;' # Compensation
+    humidity:
+      name: "Bedroom Humidity"
+    update_interval: 60s
+  - platform: dallas_temp
+    name: "Balcony temperature"
+    update_interval: 60s
+  - platform: bh1750
+    name: "Illuminance"
+    update_interval: 60s
+  - platform: template
+    name: "CO2 voltage offset"
+    state_class: measurement
+    unit_of_measurement: "V"
+    accuracy_decimals: 4
+    update_interval: 60s
+    lambda: "return id(v_comp);"
+  - platform: adc
+    pin: A0
+    name: "CO2"
+    device_class: "carbon_dioxide"
+    state_class: "measurement"
+    unit_of_measurement: "ppm"
+    accuracy_decimals: 1
+    update_interval: 1s # Push sample into smoothing window every n seconds
+    samples: 10 # 10 analog samples, reduce ADC noise
+    filters:
+      - lambda: |-
+          double buffer = 0;
+          buffer = (id(voltage_measure1) - id(voltage_measure2))/(std::log10(id(value_measure1)) - log10(id(value_measure2))); // Delta V
+          buffer = (x - id(voltage_measure1) - id(v_comp))/buffer;
+          buffer += std::log10(id(value_measure1));
+          buffer = std::pow(10, buffer);
+          if(buffer < 410){
+              id(v_comp) += 0.001;
+          }
+          return buffer;
+      - lambda: |-
+          float MIN_VALUE = 300;
+          float MAX_VALUE = 3500;
+          if (MIN_VALUE <= x && x <= MAX_VALUE) return x;
+          else return {};
+      - exponential_moving_average: 
+          alpha: 0.01
+          send_every: 60 # 1s * 60 = 1 minute
+          send_first_at: 60
+  
+
+light:
+  - platform: neopixelbus
+    type: RGB
+    variant: WS2812
+    pin: D7
+    num_leds: 6
+    name: "Status light"
+  
+display:
+  - platform: lcd_pcf8574
+    dimensions: 16x2
+    lambda: |-
+      it.no_backlight();
+
+captive_portal:
+    
