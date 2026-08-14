@@ -1,0 +1,192 @@
+esphome:
+  name: ir-hub
+  friendly_name: IR hub
+
+esp32:
+  board: lolin_s3_mini
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret ir_hub__encryption_key
+  batch_delay: 10ms  # Reduce latency for real-time applications
+
+ota:
+  - platform: esphome
+    password: !secret ir_hub__ota_password
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: !secret wifi_bssid
+  reboot_timeout: 60s
+  output_power: 19db
+  fast_connect: True
+  min_auth_mode: WPA2
+  manual_ip:
+    static_ip: 192.168.50.121
+    gateway: 192.168.50.1
+    subnet: 255.255.255.0
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: Ir-Hub Fallback Hotspot
+    password: !secret fallback_hotspot_password
+globals:
+- id: source_addr
+  type: int
+  initial_value: "0xBF40"
+- id: target_addr
+  type: int
+  initial_value: "0xBABE"
+- id: BTN_FAV
+  type: int
+  initial_value: "0xEC13"
+- id: BTN_POWER
+  type: int
+  initial_value: "0xE817"
+- id: BTN_MUTE
+  type: int
+  initial_value: "0xF10E"
+- id: BTN_OK
+  type: int
+  initial_value: "0xB04F"
+- id: BTN_1
+  type: int
+  initial_value: "0xFE01"
+- id: BTN_2
+  type: int
+  initial_value: "0xFD02"
+- id: BTN_3
+  type: int
+  initial_value: "0xFC03"
+- id: BTN_4
+  type: int
+  initial_value: "0xFB04"
+- id: BTN_5
+  type: int
+  initial_value: "0xFA05"
+- id: BTN_6
+  type: int
+  initial_value: "0xF906"
+- id: BTN_7
+  type: int
+  initial_value: "0xF807"
+- id: BTN_8
+  type: int
+  initial_value: "0xF708"
+- id: BTN_9
+  type: int
+  initial_value: "0xF609"
+- id: BTN_0
+  type: int
+  initial_value: "0xFF00"
+
+# https://github.com/esphome/esphome/issues/12186
+remote_receiver:
+  id: ir_rx
+  pin:
+    number: 9
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  dump: 
+    - nec
+  rmt_symbols: 192
+  idle: 50ms
+  clock_resolution: 500000
+  
+  on_nec:
+    then:
+    - if:
+        condition:
+          - lambda: 'return x.address == id(source_addr) && x.command == id(BTN_FAV);'
+        then:
+          - homeassistant.action:
+              action: switch.toggle
+              data:
+                entity_id: switch.bro_table_lights_plug
+            # - remote_transmitter.transmit_nec:
+            #     address: 0xBF40
+            #     command: 0xE817
+            #     command_repeats: 1
+    - light.turn_on: 
+        id: "internal_light"
+        transition_length: 0ms
+        brightness: 100%
+        red: 50%
+        green: 0%
+        blue: 00%
+    - delay: 50ms
+    - light.turn_off: 
+        id: "internal_light"
+        transition_length: 0ms
+  
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO10
+  # Infrared remotes use a 50% carrier signal
+  carrier_duty_percent: 50%
+  non_blocking: True
+  rmt_symbols: 96
+  on_complete: 
+    then:
+      - light.turn_on: 
+          id: "internal_light"
+          transition_length: 0ms
+          brightness: 100%
+          red: 0%
+          green: 50%
+          blue: 0%
+      - delay: 50ms
+      - light.turn_off: 
+          id: "internal_light"
+          transition_length: 0ms
+      
+
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    chipset: WS2812
+    pin: 5
+    num_leds: 1
+    name: "Top light"
+    restore_mode: ALWAYS_OFF
+    rmt_symbols: 48
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    chipset: WS2812
+    pin: 21
+    num_leds: 1
+    name: "Internal light"
+    id: "internal_light"
+    restore_mode: ALWAYS_OFF
+    rmt_symbols: 48
+    
+
+captive_portal:
+    
+infrared:
+  # IR transmitter instance
+  - platform: ir_rf_proxy
+    name: IR Proxy Transmitter
+    id: ir_proxy_tx
+    remote_transmitter_id: ir_tx
+  # IR receiver instance
+  - platform: ir_rf_proxy
+    name: IR Proxy Receiver
+    id: ir_proxy_rx
+    remote_receiver_id: ir_rx
+
+# bluetooth_proxy:
+#   connection_slots: 2
+
+# esp32_ble_tracker:

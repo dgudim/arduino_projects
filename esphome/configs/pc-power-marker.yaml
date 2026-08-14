@@ -1,0 +1,38 @@
+# Board: ESP32-C3 DevKitM-1 (Espressif)
+# Definition: definitions/boards/esp32-c3-devkitm-1/manifest.yaml
+
+esphome:
+  name: pc-power-marker
+  friendly_name: PC power marker
+
+esp32:
+  board: lolin_c3_mini
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret pc_power_marker__encryption_key
+ota:
+  - platform: esphome
+    password: !secret pc_power_marker__ota_password
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: !secret wifi_bssid
+  reboot_timeout: 60s
+  output_power: 19db
+  fast_connect: True
+  min_auth_mode: WPA2
+  manual_ip:
+    static_ip: 192.168.50.190
+    gateway: 192.168.50.1
+    subnet: 255.255.255.0
+  ap:
+    ssid: pc-power-marker Fallback Hotspot
+    password: !secret fallback_hotspot_password
+captive_portal:
