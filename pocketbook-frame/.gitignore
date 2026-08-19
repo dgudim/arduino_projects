@@ -1,1 +1,2 @@
-.pio
+.pio/*
+!.pio/libdeps/lolin_s3_mini/lvgl/lv_conf.h
