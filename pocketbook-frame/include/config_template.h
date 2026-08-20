@@ -12,15 +12,15 @@
 #define WEB_EXPORT_PATH "/export"
 #define PIO_OTA_ENV "lolin_s3_mini_ota"
 
-#define HA_HOST "homeassistant.local"
+#define HA_HOST ""
 #define HA_PORT 8123
 // Long-lived access token from Home Assistant profile settings.
 #define HA_TOKEN ""
 
-#define HA_ENTITY_TEMPERATURE "sensor.bedroom_temperature"
-#define HA_ENTITY_HUMIDITY "sensor.bedroom_humidity"
+#define HA_ENTITY_TEMPERATURE "sensor.temperature"
+#define HA_ENTITY_HUMIDITY "sensor.humidity"
 #define HA_ENTITY_CO2 "sensor.co2"
-#define HA_ENTITY_WEATHER "weather.home"
+#define HA_ENTITY_WEATHER "weather.local"
 
 #define TFT_HOR_RES 1246
 #define TFT_VER_RES 1648
