@@ -166,8 +166,6 @@ void setup() {
     configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
     setup_ota();
     setup_web_server();
-
-    usbMassStorage.setSkipSyncCache(true);
 }
 
 void loop() {
@@ -176,6 +174,11 @@ void loop() {
 
     const uint32_t now = millis();
     if (export_requested || now - last_export_ms >= USB_EXPORT_INTERVAL_MS) {
+        // Guard against double clicks or clicks right after an export
+        if (last_export_ms != 0 && now - last_export_ms < USB_EXPORT_COOLDOWN_MS) {
+            delay(15);
+            return;
+        }
         export_requested = false;
         run_export();
     }

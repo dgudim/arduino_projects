@@ -5,16 +5,17 @@
 #include <FS.h>
 #include <JPEGENC.h>
 #include <esp_heap_caps.h>
+#include <soc/usb_wrap_struct.h>
 #include <string.h>
 
 void service_background();
 
 namespace {
 
-constexpr int32_t kMcu = 16;  // JPEG 4:2:0 MCU is 16x16; also matches the LVGL tile height
-constexpr int32_t kPixelBytes = LV_COLOR_DEPTH / 8;  // RGB565 = 2 bytes
-constexpr int32_t kJpegWidth = ((TFT_HOR_RES + kMcu - 1) / kMcu) * kMcu;  // pad width to a whole MCU
-constexpr int32_t kStripBytes = kJpegWidth * kMcu * kPixelBytes;  // one MCU-tall RGB565 row
+constexpr int32_t kMcu = 16;                                             // JPEG 4:2:0 MCU is 16x16; also matches the LVGL tile height
+constexpr int32_t kPixelBytes = LV_COLOR_DEPTH / 8;                      // RGB565 = 2 bytes
+constexpr int32_t kJpegWidth = ((TFT_HOR_RES + kMcu - 1) / kMcu) * kMcu; // pad width to a whole MCU
+constexpr int32_t kStripBytes = kJpegWidth * kMcu * kPixelBytes;         // one MCU-tall RGB565 row
 
 JPEGENC jpg;
 JPEGENCODE jpe;
@@ -67,16 +68,91 @@ bool encode_mcu_row(uint16_t *row_pixels) {
     return true;
 }
 
-void usb_shutdown(EspUsbHost &usb, EspUsbHostMscFS &msc, bool mounted) {
-    if (mounted) {
+void delay_serviced(uint32_t ms) {
+    const uint32_t start = millis();
+    while (millis() - start < ms) {
+        service_background();
+        delay(20);
+    }
+}
+
+// Isolate D+/D- by driving SE0 (both data lines are low), and disabling the analog pads
+void usb_dpdm_set_connected(bool connected) {
+    if (!connected) {
+        Logger.println("[usb] bus detached");
+
+        usb_wrap_test_conf_reg_t test_conf;
+        test_conf.val = USB_WRAP.test_conf.val;
+        test_conf.test_enable = 1;
+        test_conf.test_usb_wrap_oe = 0; // active-low OE: drive SE0 onto the wire
+        test_conf.test_tx_dp = 0;
+        test_conf.test_tx_dm = 0;
+        USB_WRAP.test_conf.val = test_conf.val;
+        delay(20);
+
+        USB_WRAP.otg_conf.dp_pullup = 0;
+        USB_WRAP.otg_conf.dm_pullup = 0;
+        USB_WRAP.otg_conf.dp_pulldown = 0;
+        USB_WRAP.otg_conf.dm_pulldown = 0;
+        USB_WRAP.otg_conf.pad_pull_override = 1;
+        USB_WRAP.otg_conf.pad_enable = 0;
+
+    } else {
+        Logger.println("[usb] bus attached");
+
+        USB_WRAP.test_conf.test_enable = 0;
+        USB_WRAP.otg_conf.pad_enable = 1;
+        USB_WRAP.otg_conf.dp_pullup = 0;
+        USB_WRAP.otg_conf.dm_pullup = 0;
+        USB_WRAP.otg_conf.dp_pulldown = 1;
+        USB_WRAP.otg_conf.dm_pulldown = 1;
+        USB_WRAP.otg_conf.pad_pull_override = 1;
+    }
+    delay_serviced(USB_HOST_SETTLE_MS);
+}
+
+bool usb_safe_connect_start(EspUsbHost &usb) {
+    if (usb.ready()) {
+        usb_dpdm_set_connected(true);
+        return true;
+    }
+    if (!usb.begin()) {
+        Logger.printf("[usb] error starting USB host: %s\n", usb.lastErrorName());
+        return false;
+    }
+    Logger.println("[usb] started USB host");
+    return true;
+}
+
+void usb_safe_eject_unmount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
+    if (msc.mounted()) {
         msc.end();
         Logger.println("[usb] unmounted");
     }
-    usb.end();
-    Logger.println("[usb] disconnected");
+    usb_dpdm_set_connected(false);
 }
 
-}  // namespace
+bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
+    if (msc.mounted()) {
+        return true;
+    }
+
+    const uint32_t mount_start = millis();
+    while (millis() - mount_start < USB_MOUNT_TIMEOUT_MS) {
+        service_background();
+        if (usb.mscReady() &&
+            msc.begin(usb, USB_MOUNT_PATH, ESP_USB_HOST_ANY_ADDRESS, 0, 4, 1000, true)) {
+            Logger.println("[usb] mounted");
+            return true;
+        }
+        Logger.printf("[usb] waiting for MSC (%u devices, last=%s)\n", usb.deviceCount(), usb.lastErrorName());
+        delay(200);
+    }
+    Logger.printf("[usb] error mounting, timeout waiting for MSC device: %s\n", usb.lastErrorName());
+    return false;
+}
+
+} // namespace
 
 void frame_export_on_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     // Always-installed LVGL flush callback. Ignore redraws that are not the JPEG capture pass.
@@ -114,38 +190,25 @@ void frame_export_on_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *p
 FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc, lv_display_t *disp) {
     FrameExportResult result;
 
-    Logger.println("[usb] starting host");
-    if (!usb.begin()) {
-        result.message = usb.lastErrorName();
-        Logger.printf("[usb] begin failed: %s\n", result.message.c_str());
+    if (!usb_safe_connect_start(usb)) {
+        result.message = "starting USB failed: ";
+        result.message += usb.lastErrorName();
         return result;
     }
 
-    const uint32_t mount_start = millis();
-    bool mounted = false;
-    while (millis() - mount_start < USB_MOUNT_TIMEOUT_MS) {
-        service_background();
-        if (msc.begin(usb, USB_MOUNT_PATH)) {
-            mounted = true;
-            break;
-        }
-        delay(250);
-    }
-
-    if (!mounted) {
+    if (!usb_safe_mount(usb, msc)) {
         result.message = "mount failed: ";
         result.message += usb.lastErrorName();
-        Logger.println("[usb] " + result.message);
-        usb_shutdown(usb, msc, false);
+        usb_safe_eject_unmount(usb, msc);
         return result;
     }
-    Logger.printf("[usb] mounted, writing %s\n", FRAME_JPG_PATH);
+    Logger.printf("[usb] Writing %s\n", FRAME_JPG_PATH);
 
     strip = static_cast<uint16_t *>(heap_caps_malloc(kStripBytes, MALLOC_CAP_8BIT));
     if (strip == nullptr) {
         result.message = "no memory for JPEG strip";
         Logger.println("[usb] " + result.message);
-        usb_shutdown(usb, msc, true);
+        usb_safe_eject_unmount(usb, msc);
         return result;
     }
     memset(strip, 0xFF, kStripBytes);
@@ -158,7 +221,7 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
         heap_caps_free(strip);
         strip = nullptr;
         jpeg_fs = nullptr;
-        usb_shutdown(usb, msc, true);
+        usb_safe_eject_unmount(usb, msc);
         return result;
     }
 
@@ -171,7 +234,7 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
         heap_caps_free(strip);
         strip = nullptr;
         jpeg_fs = nullptr;
-        usb_shutdown(usb, msc, true);
+        usb_safe_eject_unmount(usb, msc);
         return result;
     }
 
@@ -195,7 +258,7 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
     if (last_error != JPEGE_SUCCESS || data_size <= 0) {
         result.message = "JPEG encode failed";
         Logger.printf("[usb] %s rc=%d size=%d\n", result.message.c_str(), last_error, data_size);
-        usb_shutdown(usb, msc, true);
+        usb_safe_eject_unmount(usb, msc);
         return result;
     }
 
@@ -204,6 +267,6 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
     result.message = "wrote ";
     result.message += FRAME_JPG_PATH;
     Logger.printf("[usb] wrote %s (%d bytes)\n", FRAME_JPG_PATH, data_size);
-    usb_shutdown(usb, msc, true);
+    usb_safe_eject_unmount(usb, msc);
     return result;
 }
