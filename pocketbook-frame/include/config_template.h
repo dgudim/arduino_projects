@@ -22,8 +22,8 @@
 #define HA_ENTITY_CO2 "sensor.co2"
 #define HA_ENTITY_WEATHER "weather.local"
 
-#define TFT_HOR_RES 1246
-#define TFT_VER_RES 1648
+#define TFT_HOR_RES 758
+#define TFT_VER_RES 1024
 
 #define FRAME_JPG_PATH "/splash.jpg"
 #define USB_MOUNT_PATH "/usb"
