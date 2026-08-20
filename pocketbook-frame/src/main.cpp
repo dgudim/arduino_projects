@@ -1,162 +1,184 @@
+#include "config.h"
+#include "dashboard.h"
+#include "frame_export.h"
+#include "ha_client.h"
+#include "web_log.h"
+#include "wifi_connect.h"
+
+#include <ArduinoOTA.h>
 #include <EspUsbHost.h>
-#include <WebServer.h>
+#include <WebSerial.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_task_wdt.h>
 #include <lvgl.h>
 
-#define TFT_HOR_RES 1246
-#define TFT_VER_RES 1648
-#define TFT_ROTATION LV_DISPLAY_ROTATION_90
-
-/*LVGL draws into this buffer */
-#define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES)
-uint16_t draw_buf[DRAW_BUF_SIZE];
-
-/* LVGL calls it when a rendered image needs to copied to the display*/
-void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    /*Copy `px map` to the `area`*/
-
-    /*For example ("my_..." functions needs to be implemented by you)
-    uint32_t w = lv_area_get_width(area);
-    uint32_t h = lv_area_get_height(area);
-
-    my_set_window(area->x1, area->y1, w, h);
-    my_draw_bitmaps(px_map, w * h);
-     */
-
-    /*Call it to tell LVGL you are ready*/
-    lv_display_flush_ready(disp);
-}
-
-/*Read the touchpad*/
-// Unused
-void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
-}
-
-static uint32_t my_tick(void) {
-    return millis();
-}
+// Partial LVGL framebuffer: a full 1246x1648 RGB565 frame does not fit in RAM.
+constexpr uint32_t kDrawBufLines = 16;                 // height of each LVGL flush tile
+constexpr uint32_t kPixelBytes = LV_COLOR_DEPTH / 8;   // RGB565 = 2 bytes
+constexpr uint32_t kDrawBufPixels = TFT_HOR_RES * kDrawBufLines;
+constexpr uint32_t kDrawBufBytes = kDrawBufPixels * kPixelBytes;
 
 EspUsbHost usb;
 EspUsbHostMscFS usbMassStorage;
+lv_display_t *display = nullptr;
+uint16_t *draw_buf = nullptr;
+HaSnapshot ha_data;
+FrameExportResult last_export;
+volatile bool export_requested = false;
+uint32_t last_export_ms = 0;
 
-String html_message = "";
+void service_background() {
+    ArduinoOTA.handle();
+    WebSerial.loop();
+    esp_task_wdt_reset();
+    yield();
+}
 
-static void printRootEntries(fs::FS &fs) {
-    File root = fs.open("/");
-    if (!root || !root.isDirectory()) {
-        return;
+static void setup_ota() {
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+    if (OTA_PASSWORD[0] != '\0') {
+        ArduinoOTA.setPassword(OTA_PASSWORD);
     }
 
-    Serial.println("Root entries:");
-    while (true) {
-        File entry = root.openNextFile();
-        if (!entry) {
-            break;
+    ArduinoOTA.onStart([]() {
+        Logger.println("[ota] start");
+    });
+    ArduinoOTA.onEnd([]() {
+        Logger.println("[ota] end");
+    });
+    ArduinoOTA.onProgress([](uint32_t progress, uint32_t total) {
+        static uint32_t last_pct = 0;
+        const uint32_t pct = total ? (progress * 100) / total : 0;
+        if (pct >= last_pct + 10 || pct == 100) {
+            last_pct = pct;
+            Logger.printf("[ota] %u%%\n", pct);
         }
-
-        html_message += entry.isDirectory() ? "DIR " : "FILE ";
-        html_message += entry.name();
-
-        entry.close();
-    }
-    root.close();
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Logger.printf("[ota] error %d\n", error);
+    });
+    ArduinoOTA.begin();
+    Logger.printf("[ota] ready as %s.local\n", OTA_HOSTNAME);
 }
 
-static void writeReadDeleteProbe(fs::FS &fs) {
-    const char *filePath = "/splash.bmp";
-
-    const char *message = "EspUsbHost MSC FAT write probe\n";
-    File file = fs.open(filePath, FILE_WRITE);
-    if (!file) {
-        return;
+static String format_status_page() {
+    String page;
+    page += F("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' "
+              "content='width=device-width, initial-scale=1'><title>" OTA_HOSTNAME "</title>");
+    page += F("<style>body{font-family:sans-serif;max-width:720px;margin:24px auto;padding:0 16px;}"
+              "a,button{font-size:16px} pre{background:#111;color:#d6ffd6;padding:12px;overflow:auto;}"
+              "form{display:inline}</style></head><body>");
+    page += F("<h1>" OTA_HOSTNAME "</h1>");
+    page += F("<p><a href='" WEB_SERIAL_PATH "'>Web serial</a></p>");
+    page += "<p>IP: ";
+    page += WiFi.localIP().toString();
+    page += "<br>OTA: ";
+    page += OTA_HOSTNAME;
+    page += ".local";
+    page += "<br>Wi-Fi: ";
+    page += (WiFi.status() == WL_CONNECTED) ? "connected" : "down";
+    page += "</p><h2>Home Assistant</h2><pre>";
+    page += "temperature: ";
+    page += String(ha_data.temperature);
+    page += "\nhumidity: ";
+    page += String(ha_data.humidity);
+    page += "\nco2: ";
+    page += String(ha_data.co2);
+    page += "\nweather: ";
+    page += ha_data.weather_condition;
+    if (ha_data.error.length()) {
+        page += "\nerror: ";
+        page += ha_data.error;
     }
-    const size_t written = file.print(message);
-    file.close();
-
-    file = fs.open(filePath, FILE_READ);
-    if (!file) {
-        return;
-    }
-    char buffer[64] = {};
-    const size_t readBytes = file.readBytes(buffer, sizeof(buffer) - 1);
-    file.close();
-
-    if (fs.remove(filePath)) {
-
-    } else {
-        html_message += "\nfs remove failed";
-    }
+    page += "</pre><h2>Last USB export</h2><pre>";
+    page += last_export.message;
+    page += "\nbytes: ";
+    page += String(last_export.bytes);
+    page += "</pre>";
+    page += F("<form method='POST' action='" WEB_EXPORT_PATH "'><button type='submit'>Export frame now</button></form>");
+    page += F("<p>PlatformIO OTA: <code>pio run -e " PIO_OTA_ENV " -t upload</code></p>");
+    page += F("</body></html>");
+    return page;
 }
 
-const char *ssid = "IDDQD";
-const char *password = "3Doodler its supper 3d";
-WebServer server(80);
+static void setup_lvgl() {
+    lv_init();
+    lv_tick_set_cb([]() -> uint32_t { return millis(); });
+    lv_log_register_print_cb([](lv_log_level_t, const char *buf) { Logger.print(buf); });
 
-void handleRoot() {
-    server.send(200, "text/html", html_message);
+    draw_buf = static_cast<uint16_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (draw_buf == nullptr) {
+        Logger.println("[lvgl] internal draw buffer alloc failed, trying PSRAM");
+        draw_buf = static_cast<uint16_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_8BIT));
+    }
+    if (draw_buf == nullptr) {
+        Logger.println("[lvgl] draw buffer alloc failed");
+        while (true) {
+            service_background();
+            delay(1000);
+        }
+    }
+
+    // Virtual display
+    display = lv_display_create(TFT_HOR_RES, TFT_VER_RES);
+    lv_display_set_flush_cb(display, frame_export_on_flush);
+    lv_display_set_buffers(display, draw_buf, nullptr, kDrawBufBytes,
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    // Dummy touch device
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, [](lv_indev_t *, lv_indev_data_t *) {});
+
+    dashboard_create(display);
+}
+
+static void run_export() {
+    ha_fetch(ha_data);
+    dashboard_update(ha_data);
+    lv_timer_handler();
+    last_export = export_lvgl_frame_to_usb(usb, usbMassStorage, display);
+    last_export_ms = millis();
+}
+
+static void setup_web_server() {
+    WebSerial.begin(&server, WEB_SERIAL_PATH);
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", format_status_page());
+    });
+    server.on(WEB_EXPORT_PATH, HTTP_POST, [](AsyncWebServerRequest *request) {
+        export_requested = true;
+        request->redirect("/");
+    });
+    server.begin();
+    Logger.printf("[http] http://%s/\n", WiFi.localIP().toString().c_str());
+    Logger.printf("[http] serial at %s\n", WEB_SERIAL_PATH);
 }
 
 void setup() {
+    esp_log_set_vprintf(web_log_vprintf);
+    Logger.printf("[boot] %s\n", OTA_HOSTNAME);
 
-    lv_init();
-    lv_tick_set_cb(my_tick);
-
-    lv_display_t * disp = lv_display_create(TFT_HOR_RES, TFT_VER_RES);
-    lv_display_set_flush_cb(disp, my_disp_flush);
-    lv_display_set_buffers(disp, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_DIRECT);
-
-    /*Initialize the (dummy) input device driver*/
-    lv_indev_t * indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER); /*Touchpad should have POINTER type*/
-    lv_indev_set_read_cb(indev, my_touchpad_read);
-
-    lv_obj_t *label = lv_label_create(lv_screen_active());
-    lv_label_set_text( label, "Hello Arduino, I'm LVGL!" );
-    lv_obj_align( label, LV_ALIGN_CENTER, 0, 0 );
-
-    WiFi.begin(ssid, password);
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    server.on("/", handleRoot);
-    server.begin();
+    setup_lvgl();
+    wifi_connect(WIFI_CONNECT_TIMEOUT_MS);
+    configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    setup_ota();
+    setup_web_server();
 
     usbMassStorage.setSkipSyncCache(true);
 }
 
-static uint32_t lastMountAttemptMs = 0;
-
 void loop() {
-    delay(10000);
-    server.handleClient();
+    service_background();
+    wifi_connect();
 
-    lv_timer_handler();
-
-    if (!usb.begin()) {
-        html_message += usb.lastErrorName();
+    const uint32_t now = millis();
+    if (export_requested || now - last_export_ms >= USB_EXPORT_INTERVAL_MS) {
+        export_requested = false;
+        run_export();
     }
 
-    if (!usbMassStorage.mounted()) {
-        const uint32_t now = millis();
-
-        // en: Retry mounting at a low rate so other loop work can continue.
-        if (now - lastMountAttemptMs >= 1000) {
-            lastMountAttemptMs = now;
-
-            if (usbMassStorage.begin(usb, "/usb")) {
-                printRootEntries(usbMassStorage);
-                writeReadDeleteProbe(usbMassStorage);
-            } else {
-                html_message += "\nmounting failed";
-            }
-            usbMassStorage.end();
-        }
-    }
-
-    usb.end();
-
-    delay(10000);
+    delay(15);
 }
