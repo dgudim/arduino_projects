@@ -3,8 +3,8 @@
 #include "web_log.h"
 
 #include <FS.h>
-#include <JPEGENC.h>
 #include <esp_heap_caps.h>
+#include <esp_jpeg_enc.h>
 #include <soc/usb_wrap_struct.h>
 #include <string.h>
 
@@ -12,57 +12,46 @@ void service_background();
 
 namespace {
 
-constexpr int32_t kMcu = 16;                                             // JPEG 4:2:0 MCU is 16x16; also matches the LVGL tile height
-constexpr int32_t kPixelBytes = LV_COLOR_DEPTH / 8;                      // RGB565 = 2 bytes
-constexpr int32_t kJpegWidth = ((TFT_HOR_RES + kMcu - 1) / kMcu) * kMcu; // pad width to a whole MCU
-constexpr int32_t kStripBytes = kJpegWidth * kMcu * kPixelBytes;         // one MCU-tall RGB565 row
+static_assert(TFT_VER_RES % 8 == 0, "esp_new_jpeg grayscale block mode needs height multiple of 8");
 
-JPEGENC jpg;
-JPEGENCODE jpe;
-fs::FS *jpeg_fs = nullptr;
-File jpeg_file;
-uint16_t *strip = nullptr;
-bool capturing = false;
-int32_t next_y = 0;
-int32_t last_error = JPEGE_SUCCESS;
+constexpr int32_t kBlockRows = 8;  // grayscale MCU/block height; matches the LVGL tile height
+constexpr uint32_t kJpegOutCapBytes = 256 * 1024;  // max compressed JPEG size; encoder writes the whole file here
+constexpr uint8_t kJpegQuality = 90;
 
-void *jpeg_open(const char *filename) {
-    if (jpeg_fs == nullptr) {
-        return nullptr;
+struct JpegCapture {
+    jpeg_enc_handle_t jpeg_enc = nullptr;
+    uint8_t *strip = nullptr;
+    uint8_t *jpeg_out = nullptr;
+    int jpeg_out_len = 0;
+    int jpeg_block_size = 0;
+    int32_t strip_stride = 0;
+    int32_t next_y = 0;
+    bool encode_failed = false;
+};
+
+void jpeg_release(JpegCapture &capture) {
+    if (capture.jpeg_enc != nullptr) {
+        jpeg_enc_close(capture.jpeg_enc);
+        capture.jpeg_enc = nullptr;
     }
-    jpeg_fs->remove(filename);
-    jpeg_file = jpeg_fs->open(filename, FILE_WRITE);
-    if (!jpeg_file) {
-        return nullptr;
+    if (capture.strip != nullptr) {
+        jpeg_free_align(capture.strip);
+        capture.strip = nullptr;
     }
-    return &jpeg_file;
-}
-
-void jpeg_close(JPEGE_FILE *p) {
-    File *f = static_cast<File *>(p->fHandle);
-    if (f) {
-        f->flush();
-        f->close();
+    if (capture.jpeg_out != nullptr) {
+        heap_caps_free(capture.jpeg_out);
+        capture.jpeg_out = nullptr;
     }
 }
 
-int32_t jpeg_write(JPEGE_FILE *p, uint8_t *buffer, int32_t length) {
-    File *f = static_cast<File *>(p->fHandle);
-    if (!f) {
-        return 0;
-    }
-    return f->write(buffer, length);
-}
-
-bool encode_mcu_row(uint16_t *row_pixels) {
-    const int32_t pitch = kJpegWidth * kPixelBytes;
-    for (int32_t x = 0; x < kJpegWidth; x += kMcu) {
-        const int32_t rc = jpg.addMCU(&jpe, reinterpret_cast<uint8_t *>(&row_pixels[x]), pitch);
-        if (rc != JPEGE_SUCCESS) {
-            last_error = rc;
-            Logger.printf("[jpeg] addMCU failed at x=%d y=%d rc=%d\n", x, next_y, rc);
-            return false;
-        }
+bool encode_block(JpegCapture &capture) {
+    const jpeg_error_t encode_status = jpeg_enc_process_with_block(
+        capture.jpeg_enc, capture.strip, capture.jpeg_block_size, capture.jpeg_out, kJpegOutCapBytes,
+        &capture.jpeg_out_len);
+    if (encode_status < JPEG_ERR_OK) {
+        capture.encode_failed = true;
+        Logger.printf("[jpeg] encode block failed at y=%d status=%d\n", capture.next_y, encode_status);
+        return false;
     }
     service_background();
     return true;
@@ -145,7 +134,7 @@ bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
             Logger.println("[usb] mounted");
             return true;
         }
-        Logger.printf("[usb] waiting for MSC (%u devices, last=%s)\n", usb.deviceCount(), usb.lastErrorName());
+        Logger.printf("[usb] waiting for MSC (%zu devices, last=%s)\n", usb.deviceCount(), usb.lastErrorName());
         delay(200);
     }
     Logger.printf("[usb] error mounting, timeout waiting for MSC device: %s\n", usb.lastErrorName());
@@ -155,32 +144,31 @@ bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
 } // namespace
 
 void frame_export_on_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    // Always-installed LVGL flush callback. Ignore redraws that are not the JPEG capture pass.
-    if (capturing && strip != nullptr && last_error == JPEGE_SUCCESS) {
-        const int32_t w = lv_area_get_width(area);
-        const int32_t h = lv_area_get_height(area);
-        const uint32_t src_stride = lv_draw_buf_width_to_stride(w, lv_display_get_color_format(disp));
+    // Always-installed LVGL flush callback. Capture state is only set for the export refresh.
+    JpegCapture *capture = static_cast<JpegCapture *>(lv_display_get_user_data(disp));
+    if (capture != nullptr && capture->strip != nullptr && !capture->encode_failed) {
+        const int32_t area_width = lv_area_get_width(area);
+        const int32_t area_height = lv_area_get_height(area);
+        const uint32_t src_stride = lv_draw_buf_width_to_stride(area_width, lv_display_get_color_format(disp));
 
-        // LVGL flushes 16-line tiles. Copy the rows that overlap the current 16-high MCU strip.
-        for (int32_t row = 0; row < h; row++) {
-            const int32_t dst_row = area->y1 + row - next_y;
-            if (dst_row < 0 || dst_row >= kMcu) {
+        for (int32_t row = 0; row < area_height; row++) {
+            const int32_t dst_row = area->y1 + row - capture->next_y;
+            if (dst_row < 0 || dst_row >= kBlockRows) {
                 continue;
             }
-            // Encoder width is padded to a multiple of 16; do not copy past the real display edge.
-            const int32_t copy_px = ((area->x1 + w) > TFT_HOR_RES) ? (TFT_HOR_RES - area->x1) : w;
+            const int32_t copy_px =
+                ((area->x1 + area_width) > TFT_HOR_RES) ? (TFT_HOR_RES - area->x1) : area_width;
             if (area->x1 < 0 || copy_px <= 0) {
                 continue;
             }
-            memcpy(strip + dst_row * kJpegWidth + area->x1, px_map + row * src_stride,
-                   copy_px * kPixelBytes);
+            memcpy(capture->strip + dst_row * capture->strip_stride + area->x1, px_map + row * src_stride,
+                   copy_px);
         }
-
-        // 4:2:0 MCU is 16x16. Encode when this flush completed the full-width strip at next_y.
-        if (area->x1 == 0 && w == TFT_HOR_RES && area->y1 <= next_y && area->y2 >= next_y + kMcu - 1) {
-            encode_mcu_row(strip);
-            memset(strip, 0xFF, kStripBytes);
-            next_y += kMcu;
+        if (area->x1 == 0 && area_width == TFT_HOR_RES && area->y1 <= capture->next_y &&
+            area->y2 >= capture->next_y + kBlockRows - 1) {
+            encode_block(*capture);
+            memset(capture->strip, 0xFF, capture->jpeg_block_size);
+            capture->next_y += kBlockRows;
         }
     }
 
@@ -204,60 +192,82 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
     }
     Logger.printf("[usb] Writing %s\n", FRAME_JPG_PATH);
 
-    strip = static_cast<uint16_t *>(heap_caps_malloc(kStripBytes, MALLOC_CAP_8BIT));
-    if (strip == nullptr) {
-        result.message = "no memory for JPEG strip";
+    JpegCapture capture;
+    jpeg_enc_config_t enc_cfg = DEFAULT_JPEG_ENC_CONFIG();
+    enc_cfg.width = TFT_HOR_RES;
+    enc_cfg.height = TFT_VER_RES;
+    enc_cfg.src_type = JPEG_PIXEL_FORMAT_GRAY;
+    enc_cfg.subsampling = JPEG_SUBSAMPLE_GRAY;
+    enc_cfg.quality = kJpegQuality;
+    enc_cfg.rotate = JPEG_ROTATE_0D;
+    enc_cfg.task_enable = false;
+
+    if (jpeg_enc_open(&enc_cfg, &capture.jpeg_enc) != JPEG_ERR_OK || capture.jpeg_enc == nullptr) {
+        result.message = "JPEG encoder open failed";
         Logger.println("[usb] " + result.message);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }
-    memset(strip, 0xFF, kStripBytes);
 
-    jpeg_fs = &msc;
-    last_error = jpg.open(FRAME_JPG_PATH, jpeg_open, jpeg_close, nullptr, jpeg_write, nullptr);
-    if (last_error != JPEGE_SUCCESS || !jpeg_file) {
-        result.message = "JPEG open failed";
-        Logger.printf("[usb] %s rc=%d\n", result.message.c_str(), last_error);
-        heap_caps_free(strip);
-        strip = nullptr;
-        jpeg_fs = nullptr;
+    capture.jpeg_block_size = jpeg_enc_get_block_size(capture.jpeg_enc);
+    if (capture.jpeg_block_size <= 0 || capture.jpeg_block_size % kBlockRows != 0) {
+        result.message = "unexpected JPEG block size";
+        Logger.printf("[usb] %s got=%d\n", result.message.c_str(), capture.jpeg_block_size);
+        jpeg_release(capture);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }
+    capture.strip_stride = capture.jpeg_block_size / kBlockRows;
 
-    last_error = jpg.encodeBegin(&jpe, TFT_HOR_RES, TFT_VER_RES, JPEGE_PIXEL_RGB565, JPEGE_SUBSAMPLE_420,
-                                 JPEGE_Q_HIGH);
-    if (last_error != JPEGE_SUCCESS) {
-        result.message = "JPEG encodeBegin failed";
-        Logger.printf("[usb] %s rc=%d\n", result.message.c_str(), last_error);
-        jpg.close();
-        heap_caps_free(strip);
-        strip = nullptr;
-        jpeg_fs = nullptr;
+    capture.strip = static_cast<uint8_t *>(jpeg_calloc_align(capture.jpeg_block_size, 16));
+    capture.jpeg_out = static_cast<uint8_t *>(heap_caps_malloc(kJpegOutCapBytes, MALLOC_CAP_8BIT));
+    if (capture.strip == nullptr || capture.jpeg_out == nullptr) {
+        result.message = "no memory for JPEG buffers";
+        Logger.println("[usb] " + result.message);
+        jpeg_release(capture);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }
+    memset(capture.strip, 0xFF, capture.jpeg_block_size);
 
-    next_y = 0;
-    capturing = true;
+    lv_display_set_user_data(disp, &capture);
     lv_obj_invalidate(lv_display_get_screen_active(disp));
     lv_refr_now(disp);
-    capturing = false;
+    lv_display_set_user_data(disp, nullptr);
 
-    while (last_error == JPEGE_SUCCESS && next_y < TFT_VER_RES) {
-        encode_mcu_row(strip);
-        memset(strip, 0xFF, kStripBytes);
-        next_y += kMcu;
+    while (!capture.encode_failed && capture.next_y < TFT_VER_RES) {
+        encode_block(capture);
+        memset(capture.strip, 0xFF, capture.jpeg_block_size);
+        capture.next_y += kBlockRows;
     }
 
-    const int32_t data_size = jpg.close();
-    heap_caps_free(strip);
-    strip = nullptr;
-    jpeg_fs = nullptr;
-
-    if (last_error != JPEGE_SUCCESS || data_size <= 0) {
+    const int32_t data_size = capture.jpeg_out_len;
+    if (capture.encode_failed || data_size <= 0) {
         result.message = "JPEG encode failed";
-        Logger.printf("[usb] %s rc=%d size=%d\n", result.message.c_str(), last_error, data_size);
+        Logger.printf("[usb] %s size=%d\n", result.message.c_str(), data_size);
+        jpeg_release(capture);
+        usb_safe_eject_unmount(usb, msc);
+        return result;
+    }
+
+    msc.remove(FRAME_JPG_PATH);
+    File out = msc.open(FRAME_JPG_PATH, FILE_WRITE);
+    if (!out) {
+        result.message = "JPEG file open failed";
+        Logger.println("[usb] " + result.message);
+        jpeg_release(capture);
+        usb_safe_eject_unmount(usb, msc);
+        return result;
+    }
+    const size_t written = out.write(capture.jpeg_out, data_size);
+    out.flush();
+    out.close();
+    jpeg_release(capture);
+
+    if (written != static_cast<size_t>(data_size)) {
+        result.message = "JPEG file write failed";
+        Logger.printf("[usb] %s wrote=%u expected=%d\n", result.message.c_str(),
+                      static_cast<unsigned>(written), data_size);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }

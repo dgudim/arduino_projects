@@ -14,16 +14,16 @@
 #include <esp_task_wdt.h>
 #include <lvgl.h>
 
-// Partial LVGL framebuffer: a full 1246x1648 RGB565 frame does not fit in RAM.
-constexpr uint32_t kDrawBufLines = 16;                 // height of each LVGL flush tile
-constexpr uint32_t kPixelBytes = LV_COLOR_DEPTH / 8;   // RGB565 = 2 bytes
+// Partial LVGL framebuffer: a full 758x1024 L8 frame still needs a lot of RAM, so we flush 8-line tiles.
+constexpr uint32_t kDrawBufLines = 8;                  // matches JPEG grayscale block height
+constexpr uint32_t kPixelBytes = LV_COLOR_DEPTH / 8;   // L8 grayscale = 1 byte
 constexpr uint32_t kDrawBufPixels = TFT_HOR_RES * kDrawBufLines;
 constexpr uint32_t kDrawBufBytes = kDrawBufPixels * kPixelBytes;
 
 EspUsbHost usb;
 EspUsbHostMscFS usbMassStorage;
 lv_display_t *display = nullptr;
-uint16_t *draw_buf = nullptr;
+uint8_t *draw_buf = nullptr;
 HaSnapshot ha_data;
 FrameExportResult last_export;
 volatile bool export_requested = false;
@@ -108,10 +108,10 @@ static void setup_lvgl() {
     lv_tick_set_cb([]() -> uint32_t { return millis(); });
     lv_log_register_print_cb([](lv_log_level_t, const char *buf) { Logger.print(buf); });
 
-    draw_buf = static_cast<uint16_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    draw_buf = static_cast<uint8_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (draw_buf == nullptr) {
         Logger.println("[lvgl] internal draw buffer alloc failed, trying PSRAM");
-        draw_buf = static_cast<uint16_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_8BIT));
+        draw_buf = static_cast<uint8_t *>(heap_caps_malloc(kDrawBufBytes, MALLOC_CAP_8BIT));
     }
     if (draw_buf == nullptr) {
         Logger.println("[lvgl] draw buffer alloc failed");
@@ -123,6 +123,7 @@ static void setup_lvgl() {
 
     // Virtual display
     display = lv_display_create(TFT_HOR_RES, TFT_VER_RES);
+    lv_display_set_color_format(display, LV_COLOR_FORMAT_L8);
     lv_display_set_flush_cb(display, frame_export_on_flush);
     lv_display_set_buffers(display, draw_buf, nullptr, kDrawBufBytes,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
