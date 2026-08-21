@@ -1,2 +1,5 @@
 .pio
 include/config.h
+compile_commands.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
