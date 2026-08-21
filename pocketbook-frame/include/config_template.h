@@ -23,6 +23,8 @@
 #define HA_ENTITY_WEATHER "weather.local"
 #define HA_HISTORY_HOURS 24
 #define HA_HISTORY_POINTS 48
+#define HA_FORECAST_DAILY_COUNT 5
+#define HA_FORECAST_HOURLY_COUNT 5
 
 #define TFT_HOR_RES 758
 #define TFT_VER_RES 1024

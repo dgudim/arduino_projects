@@ -271,6 +271,111 @@ static String friendly_condition(const String &raw) {
     return out;
 }
 
+static bool ha_http_post_json(const String &path, const String &body, JsonDocument &filter, JsonDocument &doc) {
+    String url = HA_URL;
+    url += path;
+
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(HA_HTTP_TIMEOUT_MS);
+    if (!http.begin(client, url)) {
+        Logger.printf("[ha] POST begin failed %s\n", path.c_str());
+        return false;
+    }
+    http.addHeader("Authorization", String("Bearer ") + HA_TOKEN);
+    http.addHeader("Accept", "application/json");
+    http.addHeader("Content-Type", "application/json");
+    const int code = http.POST(body);
+    if (code != HTTP_CODE_OK) {
+        Logger.printf("[ha] POST %s failed %d\n", path.c_str(), code);
+        http.end();
+        return false;
+    }
+
+    const DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+    if (err) {
+        Logger.printf("[ha] forecast json error: %s\n", err.c_str());
+        return false;
+    }
+    return true;
+}
+
+static void fill_forecast(JsonArray series, HaForecastPoint *out, uint8_t max_count, uint8_t &count, bool daily) {
+    count = 0;
+    const time_t now = clock_is_set() ? time(nullptr) : 0;
+    const time_t period = daily ? 86400 : 3600;
+    for (JsonObject point : series) {
+        if (count >= max_count) {
+            break;
+        }
+        const time_t t = parse_ha_time(point["datetime"] | "");
+        if (now > 0 && t > 0 && (t + period) <= now) {
+            continue;
+        }
+        HaForecastPoint &dest = out[count];
+        dest.datetime = t;
+        dest.condition = point["condition"] | "";
+        copy_json_float(point["temperature"], dest.temperature);
+        copy_json_float(point["templow"], dest.templow);
+        copy_json_float(point["precipitation_probability"], dest.precipitation_probability);
+        dest.is_daytime = true;
+        if (!point["is_daytime"].isNull()) {
+            dest.is_daytime = point["is_daytime"].as<bool>();
+        } else if (!daily && t > 0) {
+            struct tm local;
+            if (localtime_r(&t, &local) != nullptr) {
+                dest.is_daytime = local.tm_hour >= 6 && local.tm_hour < 21;
+            }
+        }
+        count++;
+    }
+}
+
+static bool ha_fetch_forecast_type(const char *type, HaForecastPoint *out, uint8_t max_count, uint8_t &count) {
+    String body = "{\"entity_id\":\"";
+    body += HA_ENTITY_WEATHER;
+    body += "\",\"type\":\"";
+    body += type;
+    body += "\"}";
+
+    JsonDocument filter;
+    JsonObject fields = filter["service_response"][HA_ENTITY_WEATHER]["forecast"][0];
+    fields["datetime"] = true;
+    fields["condition"] = true;
+    fields["temperature"] = true;
+    fields["templow"] = true;
+    fields["precipitation_probability"] = true;
+    fields["is_daytime"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["datetime"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["condition"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["temperature"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["templow"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["precipitation_probability"] = true;
+    filter[HA_ENTITY_WEATHER]["forecast"][0]["is_daytime"] = true;
+
+    JsonDocument doc;
+    if (!ha_http_post_json("/api/services/weather/get_forecasts?return_response=true", body, filter, doc)) {
+        return false;
+    }
+
+    JsonArray series = doc["service_response"][HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
+    if (series.isNull()) {
+        series = doc[HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
+    }
+    if (series.isNull()) {
+        Logger.printf("[ha] %s forecast missing in response\n", type);
+        return false;
+    }
+    fill_forecast(series, out, max_count, count, strcmp(type, "daily") == 0);
+    return count > 0;
+}
+
+static void ha_fetch_forecasts(HaSnapshot &out) {
+    ha_fetch_forecast_type("daily", out.daily, HA_FORECAST_DAILY_COUNT, out.daily_count);
+    ha_fetch_forecast_type("hourly", out.hourly, HA_FORECAST_HOURLY_COUNT, out.hourly_count);
+}
+
 bool ha_fetch(HaSnapshot &out) {
     out = HaSnapshot{};
     if (WiFi.status() != WL_CONNECTED) {
@@ -309,10 +414,12 @@ bool ha_fetch(HaSnapshot &out) {
         }
     }
 
+    ha_fetch_forecasts(out);
     ha_fetch_history(out);
 
     out.ok = true;
-    Logger.printf("[ha] t=%.1f h=%.0f co2=%.0f weather=%s\n",
-                  out.temperature, out.humidity, out.co2, out.weather_condition.c_str());
+    Logger.printf("[ha] t=%.1f h=%.0f co2=%.0f weather=%s daily=%u hourly=%u\n",
+                  out.temperature, out.humidity, out.co2, out.weather_condition.c_str(),
+                  out.daily_count, out.hourly_count);
     return true;
 }

@@ -89,6 +89,10 @@ static String format_status_page() {
     page += String(ha_data.co2);
     page += "\nweather: ";
     page += ha_data.weather_condition;
+    page += "\ndaily forecast: ";
+    page += String(ha_data.daily_count);
+    page += "\nhourly forecast: ";
+    page += String(ha_data.hourly_count);
     if (ha_data.error.length()) {
         page += "\nerror: ";
         page += ha_data.error;

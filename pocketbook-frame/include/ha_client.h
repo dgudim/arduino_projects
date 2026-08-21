@@ -4,6 +4,16 @@
 
 #include <Arduino.h>
 #include <math.h>
+#include <time.h>
+
+struct HaForecastPoint {
+    time_t datetime = 0;
+    String condition;
+    float temperature = NAN;
+    float templow = NAN;
+    float precipitation_probability = NAN;
+    bool is_daytime = true;
+};
 
 struct HaSnapshot {
     float temperature = NAN;
@@ -18,6 +28,10 @@ struct HaSnapshot {
     float weather_humidity = NAN;
     float wind_speed = NAN;
     String wind_speed_unit = "km/h";
+    HaForecastPoint daily[HA_FORECAST_DAILY_COUNT];
+    HaForecastPoint hourly[HA_FORECAST_HOURLY_COUNT];
+    uint8_t daily_count = 0;
+    uint8_t hourly_count = 0;
     float temperature_history[HA_HISTORY_POINTS];
     float co2_history[HA_HISTORY_POINTS];
     bool ok = false;

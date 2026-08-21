@@ -1,6 +1,7 @@
 #include "utils.h"
 #include "config.h"
 #include "dashboard.h"
+#include "weather_icons.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@ constexpr int32_t kHumGaugeMin = 0;
 constexpr int32_t kHumGaugeMax = 100;
 constexpr int32_t kCo2GaugeMin = 400;
 constexpr int32_t kCo2GaugeMax = 2000;
+constexpr int32_t kForecastIconSize = 40;
 
 lv_obj_t *clock_label = nullptr;
 lv_obj_t *date_label = nullptr;
@@ -22,8 +24,6 @@ lv_obj_t *status_label = nullptr;
 lv_obj_t *temp_value = nullptr;
 lv_obj_t *hum_value = nullptr;
 lv_obj_t *co2_value = nullptr;
-lv_obj_t *weather_value = nullptr;
-lv_obj_t *weather_detail = nullptr;
 lv_obj_t *temp_arc = nullptr;
 lv_obj_t *hum_arc = nullptr;
 lv_obj_t *co2_arc = nullptr;
@@ -31,6 +31,17 @@ lv_obj_t *temp_chart = nullptr;
 lv_obj_t *co2_chart = nullptr;
 lv_chart_series_t *temp_series = nullptr;
 lv_chart_series_t *co2_series = nullptr;
+
+struct ForecastSlot {
+    lv_obj_t *column = nullptr;
+    lv_obj_t *when = nullptr;
+    lv_obj_t *icon = nullptr;
+    lv_obj_t *temp = nullptr;
+    lv_obj_t *templow = nullptr;
+};
+
+ForecastSlot daily_slots[HA_FORECAST_DAILY_COUNT];
+ForecastSlot hourly_slots[HA_FORECAST_HOURLY_COUNT];
 
 String format_number(float value, const char *suffix, int32_t decimals) {
     if (isnan(value)) {
@@ -72,22 +83,128 @@ void add_caption(lv_obj_t *parent, const char *caption) {
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
 
-lv_obj_t *make_card(lv_obj_t *parent, const char *caption, int32_t width, int32_t height, lv_obj_t **value_out) {
+void style_plain(lv_obj_t *obj) {
+    lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_set_style_pad_gap(obj, 2, 0);
+    lv_obj_set_style_radius(obj, 0, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+lv_obj_t *make_forecast_slot(lv_obj_t *parent, ForecastSlot *slot, bool show_low) {
+    lv_obj_t *column = lv_obj_create(parent);
+    style_plain(column);
+    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_grow(column, 1);
+    lv_obj_set_height(column, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(column, 2, 0);
+
+    lv_obj_t *when = lv_label_create(column);
+    lv_label_set_text(when, "--");
+    lv_obj_set_style_text_font(when, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(when, lv_color_hex(0x555555), 0);
+    lv_label_set_long_mode(when, LV_LABEL_LONG_CLIP);
+
+    lv_obj_t *icon = lv_image_create(column);
+    lv_obj_set_size(icon, kForecastIconSize, kForecastIconSize);
+    lv_image_set_src(icon, weather_icon_for_condition("cloudy", false));
+
+    lv_obj_t *temp = lv_label_create(column);
+    lv_label_set_text(temp, "--");
+    lv_obj_set_style_text_font(temp, &lv_font_montserrat_16, 0);
+
+    lv_obj_t *templow = lv_label_create(column);
+    lv_label_set_text(templow, "");
+    lv_obj_set_style_text_font(templow, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(templow, lv_color_hex(0x666666), 0);
+    if (!show_low) {
+        lv_obj_add_flag(templow, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    slot->column = column;
+    slot->when = when;
+    slot->icon = icon;
+    slot->temp = temp;
+    slot->templow = templow;
+    return column;
+}
+
+lv_obj_t *make_forecast_row(lv_obj_t *parent, ForecastSlot *slots, uint8_t count, bool show_low) {
+    lv_obj_t *row = lv_obj_create(parent);
+    style_plain(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    for (uint8_t i = 0; i < count; i++) {
+        make_forecast_slot(row, &slots[i], show_low);
+    }
+    return row;
+}
+
+lv_obj_t *make_forecast_card(lv_obj_t *parent, int32_t width, int32_t height) {
     lv_obj_t *card = lv_obj_create(parent);
     style_card(card);
     lv_obj_set_size(card, width, height);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(card, 4, 0);
 
-    lv_obj_t *value = lv_label_create(card);
-    lv_label_set_text(value, "--");
-    lv_obj_set_style_text_font(value, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(value, lv_color_black(), 0);
-    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(value, lv_pct(100));
-    lv_obj_align(value, LV_ALIGN_TOP_MID, 0, 8);
-    *value_out = value;
+    lv_obj_t *daily_title = lv_label_create(card);
+    lv_label_set_text(daily_title, "Daily");
+    lv_obj_set_style_text_font(daily_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(daily_title, lv_pct(100));
 
-    add_caption(card, caption);
+    make_forecast_row(card, daily_slots, HA_FORECAST_DAILY_COUNT, true);
+
+    lv_obj_t *hourly_title = lv_label_create(card);
+    lv_label_set_text(hourly_title, "Hourly");
+    lv_obj_set_style_text_font(hourly_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(hourly_title, lv_pct(100));
+    lv_obj_set_style_pad_top(hourly_title, 6, 0);
+
+    make_forecast_row(card, hourly_slots, HA_FORECAST_HOURLY_COUNT, false);
     return card;
+}
+
+void set_temp_label(lv_obj_t *label, float value) {
+    if (isnan(value)) {
+        lv_label_set_text(label, "--");
+        return;
+    }
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%.0f°", value);
+    lv_label_set_text(label, buf);
+}
+
+void update_forecast_slots(ForecastSlot *slots, uint8_t slot_count, const HaForecastPoint *points, uint8_t count,
+                           bool daily) {
+    for (uint8_t i = 0; i < slot_count; i++) {
+        ForecastSlot &slot = slots[i];
+        if (i >= count) {
+            lv_obj_add_flag(slot.column, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_remove_flag(slot.column, LV_OBJ_FLAG_HIDDEN);
+
+        const HaForecastPoint &point = points[i];
+        char when_buf[8] = "--";
+        struct tm local;
+        if (point.datetime > 0 && localtime_r(&point.datetime, &local) != nullptr) {
+            strftime(when_buf, sizeof(when_buf), daily ? "%a" : "%H:%M", &local);
+        }
+        lv_label_set_text(slot.when, when_buf);
+        lv_image_set_src(slot.icon, weather_icon_for_condition(point.condition.c_str(), !point.is_daytime));
+        set_temp_label(slot.temp, point.temperature);
+        if (daily) {
+            set_temp_label(slot.templow, point.templow);
+            lv_obj_remove_flag(slot.templow, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(slot.templow, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 }
 
 lv_obj_t *make_gauge_card(lv_obj_t *parent, const char *caption, int32_t width, int32_t height, int32_t min_value,
@@ -221,13 +338,8 @@ void dashboard_create(lv_display_t *disp) {
         make_gauge_card(scr, "CO2", card_w, card_h, kCo2GaugeMin, kCo2GaugeMax, &co2_value, &co2_arc);
     lv_obj_set_pos(co2_card, pad, cards_top + card_h + gap);
 
-    lv_obj_t *weather_card = make_card(scr, "Weather", card_w, card_h, &weather_value);
-    lv_obj_set_pos(weather_card, pad + card_w + gap, cards_top + card_h + gap);
-
-    weather_detail = lv_label_create(weather_card);
-    lv_obj_set_style_text_font(weather_detail, &lv_font_montserrat_16, 0);
-    lv_label_set_text(weather_detail, "");
-    lv_obj_align(weather_detail, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_t *forecast_card = make_forecast_card(scr, card_w, card_h);
+    lv_obj_set_pos(forecast_card, pad + card_w + gap, cards_top + card_h + gap);
 
     char temp_title[40];
     char co2_title[40];
@@ -247,23 +359,8 @@ void dashboard_update(const HaSnapshot &data) {
     set_chart_history(temp_chart, temp_series, data.temperature_history);
     set_chart_history(co2_chart, co2_series, data.co2_history);
 
-    if (data.weather_condition.length() > 0) {
-        lv_label_set_text(weather_value, data.weather_condition.c_str());
-    } else {
-        lv_label_set_text(weather_value, "--");
-    }
-
-    String detail;
-    if (!isnan(data.weather_temperature)) {
-        detail += format_number(data.weather_temperature, data.temperature_unit.c_str(), 0);
-    }
-    if (!isnan(data.wind_speed)) {
-        if (detail.length()) {
-            detail += "  ";
-        }
-        detail += format_number(data.wind_speed, data.wind_speed_unit.c_str(), 0);
-    }
-    lv_label_set_text(weather_detail, detail.c_str());
+    update_forecast_slots(daily_slots, HA_FORECAST_DAILY_COUNT, data.daily, data.daily_count, true);
+    update_forecast_slots(hourly_slots, HA_FORECAST_HOURLY_COUNT, data.hourly, data.hourly_count, false);
 
     if (data.ok) {
         lv_label_set_text(status_label, "Home Assistant");
