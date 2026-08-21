@@ -12,10 +12,10 @@
 #define WEB_EXPORT_PATH "/export"
 #define PIO_OTA_ENV "lolin_s3_mini_ota"
 
-#define HA_HOST ""
-#define HA_PORT 8123
+#define HA_URL "http://homeassistant.local:8123"
 // Long-lived access token from Home Assistant profile settings.
 #define HA_TOKEN ""
+#define HA_HTTP_TIMEOUT_MS 15000
 
 #define HA_ENTITY_TEMPERATURE "sensor.temperature"
 #define HA_ENTITY_HUMIDITY "sensor.humidity"

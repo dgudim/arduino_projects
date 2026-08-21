@@ -1,3 +1,4 @@
+#include "utils.h"
 #include "config.h"
 #include "dashboard.h"
 
@@ -64,6 +65,13 @@ void style_card(lv_obj_t *card) {
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+void add_caption(lv_obj_t *parent, const char *caption) {
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, caption);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
 lv_obj_t *make_card(lv_obj_t *parent, const char *caption, int32_t width, int32_t height, lv_obj_t **value_out) {
     lv_obj_t *card = lv_obj_create(parent);
     style_card(card);
@@ -78,10 +86,7 @@ lv_obj_t *make_card(lv_obj_t *parent, const char *caption, int32_t width, int32_
     lv_obj_align(value, LV_ALIGN_TOP_MID, 0, 8);
     *value_out = value;
 
-    lv_obj_t *label = lv_label_create(card);
-    lv_label_set_text(label, caption);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
+    add_caption(card, caption);
     return card;
 }
 
@@ -91,10 +96,7 @@ lv_obj_t *make_gauge_card(lv_obj_t *parent, const char *caption, int32_t width, 
     style_card(card);
     lv_obj_set_size(card, width, height);
 
-    lv_obj_t *caption_label = lv_label_create(card);
-    lv_label_set_text(caption_label, caption);
-    lv_obj_set_style_text_font(caption_label, &lv_font_montserrat_16, 0);
-    lv_obj_align(caption_label, LV_ALIGN_BOTTOM_MID, 0, 0);
+    add_caption(card, caption);
 
     const int32_t arc_size = height - 56;
     lv_obj_t *arc = lv_arc_create(card);
@@ -150,6 +152,12 @@ lv_obj_t *make_chart(lv_obj_t *parent, const char *title, int32_t x, int32_t y, 
     lv_chart_set_all_values(chart, series, LV_CHART_POINT_NONE);
     *series_out = series;
     return chart;
+}
+
+void update_gauge(lv_obj_t *label, lv_obj_t *arc, float value, const char *unit, int32_t decimals, int32_t min_value,
+                  int32_t max_value) {
+    lv_label_set_text(label, format_number(value, unit, decimals).c_str());
+    lv_arc_set_value(arc, clamp_gauge(value, min_value, max_value));
 }
 
 void set_chart_history(lv_obj_t *chart, lv_chart_series_t *series, const float *history) {
@@ -232,13 +240,9 @@ void dashboard_create(lv_display_t *disp) {
 }
 
 void dashboard_update(const HaSnapshot &data) {
-    lv_label_set_text(temp_value, format_number(data.temperature, data.temperature_unit.c_str(), 1).c_str());
-    lv_label_set_text(hum_value, format_number(data.humidity, data.humidity_unit.c_str(), 0).c_str());
-    lv_label_set_text(co2_value, format_number(data.co2, data.co2_unit.c_str(), 0).c_str());
-
-    lv_arc_set_value(temp_arc, clamp_gauge(data.temperature, kTempGaugeMin, kTempGaugeMax));
-    lv_arc_set_value(hum_arc, clamp_gauge(data.humidity, kHumGaugeMin, kHumGaugeMax));
-    lv_arc_set_value(co2_arc, clamp_gauge(data.co2, kCo2GaugeMin, kCo2GaugeMax));
+    update_gauge(temp_value, temp_arc, data.temperature, data.temperature_unit.c_str(), 1, kTempGaugeMin, kTempGaugeMax);
+    update_gauge(hum_value, hum_arc, data.humidity, data.humidity_unit.c_str(), 0, kHumGaugeMin, kHumGaugeMax);
+    update_gauge(co2_value, co2_arc, data.co2, data.co2_unit.c_str(), 0, kCo2GaugeMin, kCo2GaugeMax);
 
     set_chart_history(temp_chart, temp_series, data.temperature_history);
     set_chart_history(co2_chart, co2_series, data.co2_history);
@@ -267,9 +271,7 @@ void dashboard_update(const HaSnapshot &data) {
         lv_label_set_text(status_label, data.error.c_str());
     }
 
-    time_t now = time(nullptr);
-    struct tm t;
-    if (now < 1700000000 || localtime_r(&now, &t) == nullptr) {
+    if (!clock_is_set()) {
         return;
     }
     char clock_buf[16];

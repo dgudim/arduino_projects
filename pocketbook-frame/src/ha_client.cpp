@@ -1,3 +1,4 @@
+#include "utils.h"
 #include "config.h"
 #include "ha_client.h"
 #include "web_log.h"
@@ -17,7 +18,7 @@ static HARestAPI ha(ha_wifi);
 static bool ha_started = false;
 
 static bool ha_configured() {
-    return HA_TOKEN[0] != '\0';
+    return HA_URL[0] != '\0' && HA_TOKEN[0] != '\0';
 }
 
 static bool ha_ensure() {
@@ -25,10 +26,16 @@ static bool ha_ensure() {
         return false;
     }
     if (!ha_started) {
-        ha.setHAServer(HA_HOST, HA_PORT);
+        String host;
+        uint16_t port = 8123;
+        if (!parse_http_url(HA_URL, host, port, 8123)) {
+            Logger.println("[ha] HA_URL is invalid");
+            return false;
+        }
+        ha.setHAServer(host, port);
         ha.setHAPassword(HA_TOKEN);
         ha.setDebugMode(false);
-        ha.setTimeOut(5000);
+        ha.setTimeOut(HA_HTTP_TIMEOUT_MS);
         ha_started = true;
     }
     return true;
@@ -64,15 +71,41 @@ static float parse_float(const String &value) {
     return value.toFloat();
 }
 
+static void copy_json_string(JsonVariantConst value, String &out) {
+    if (!value.isNull()) {
+        out = value.as<String>();
+    }
+}
+
+static void copy_json_float(JsonVariantConst value, float &out) {
+    if (!value.isNull()) {
+        out = value.as<float>();
+    }
+}
+
+static bool ha_get_numeric_sensor(const char *entity_id, JsonDocument &doc, float &value, String &unit) {
+    String state;
+    if (!ha_get_state(entity_id, state, doc)) {
+        return false;
+    }
+    value = parse_float(state);
+    copy_json_string(doc["attributes"]["unit_of_measurement"], unit);
+    return true;
+}
+
+static bool is_leap_year(int year) {
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+}
+
 static time_t utc_from_parts(int year, int month, int day, int hour, int minute, int second) {
     static const int month_days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     int days = 0;
     for (int y = 1970; y < year; y++) {
-        days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+        days += is_leap_year(y) ? 366 : 365;
     }
     for (int m = 0; m < month - 1; m++) {
         days += month_days[m];
-        if (m == 1 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
+        if (m == 1 && is_leap_year(year)) {
             days++;
         }
     }
@@ -146,12 +179,11 @@ static void downsample_history(JsonArray series, time_t start, time_t end, float
 }
 
 static void ha_fetch_history(HaSnapshot &out) {
-    const time_t now = time(nullptr);
-    if (now < 1700000000) {
+    if (!clock_is_set()) {
         Logger.println("[ha] history skipped, clock not set");
         return;
     }
-    const time_t start = now - static_cast<time_t>(HA_HISTORY_HOURS) * 3600;
+    const time_t start = time(nullptr) - static_cast<time_t>(HA_HISTORY_HOURS) * 3600;
     char start_iso[32];
     format_iso_utc(start, start_iso, sizeof(start_iso));
 
@@ -163,15 +195,12 @@ static void ha_fetch_history(HaSnapshot &out) {
     path += HA_ENTITY_CO2;
     path += "&minimal_response&no_attributes";
 
-    String url = "http://";
-    url += HA_HOST;
-    url += ":";
-    url += String(HA_PORT);
+    String url = HA_URL;
     url += path;
 
     WiFiClient client;
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setTimeout(HA_HTTP_TIMEOUT_MS);
     if (!http.begin(client, url)) {
         Logger.println("[ha] history begin failed");
         return;
@@ -199,18 +228,25 @@ static void ha_fetch_history(HaSnapshot &out) {
     }
 
     JsonArray root = doc.as<JsonArray>();
+    struct {
+        const char *entity_id;
+        float *dest;
+    } targets[] = {
+        {HA_ENTITY_TEMPERATURE, out.temperature_history},
+        {HA_ENTITY_CO2, out.co2_history},
+    };
     uint32_t series_index = 0;
     for (JsonArray series : root) {
         const char *entity_id = series.size() ? series[0]["entity_id"] | "" : "";
         float *dest = nullptr;
-        if (strcmp(entity_id, HA_ENTITY_TEMPERATURE) == 0) {
-            dest = out.temperature_history;
-        } else if (strcmp(entity_id, HA_ENTITY_CO2) == 0) {
-            dest = out.co2_history;
-        } else if (series_index == 0) {
-            dest = out.temperature_history;
-        } else if (series_index == 1) {
-            dest = out.co2_history;
+        for (auto &target : targets) {
+            if (strcmp(entity_id, target.entity_id) == 0) {
+                dest = target.dest;
+                break;
+            }
+        }
+        if (dest == nullptr && series_index < (sizeof(targets) / sizeof(targets[0]))) {
+            dest = targets[series_index].dest;
         }
         series_index++;
         if (dest != nullptr) {
@@ -255,44 +291,20 @@ bool ha_fetch(HaSnapshot &out) {
     }
 
     JsonDocument doc;
+    ha_get_numeric_sensor(HA_ENTITY_TEMPERATURE, doc, out.temperature, out.temperature_unit);
+    ha_get_numeric_sensor(HA_ENTITY_HUMIDITY, doc, out.humidity, out.humidity_unit);
+    ha_get_numeric_sensor(HA_ENTITY_CO2, doc, out.co2, out.co2_unit);
+
     String state;
-
-    if (ha_get_state(HA_ENTITY_TEMPERATURE, state, doc)) {
-        out.temperature = parse_float(state);
-        if (!doc["attributes"]["unit_of_measurement"].isNull()) {
-            out.temperature_unit = doc["attributes"]["unit_of_measurement"].as<String>();
-        }
-    }
-    if (ha_get_state(HA_ENTITY_HUMIDITY, state, doc)) {
-        out.humidity = parse_float(state);
-        if (!doc["attributes"]["unit_of_measurement"].isNull()) {
-            out.humidity_unit = doc["attributes"]["unit_of_measurement"].as<String>();
-        }
-    }
-    if (ha_get_state(HA_ENTITY_CO2, state, doc)) {
-        out.co2 = parse_float(state);
-        if (!doc["attributes"]["unit_of_measurement"].isNull()) {
-            out.co2_unit = doc["attributes"]["unit_of_measurement"].as<String>();
-        }
-    }
-
     if (ha_get_state(HA_ENTITY_WEATHER, state, doc)) {
         out.weather_condition = friendly_condition(state);
         JsonObject weather_attrs = doc["attributes"].as<JsonObject>();
-        if (!weather_attrs["temperature"].isNull()) {
-            out.weather_temperature = weather_attrs["temperature"].as<float>();
-        }
-        if (!weather_attrs["humidity"].isNull()) {
-            out.weather_humidity = weather_attrs["humidity"].as<float>();
-        }
-        if (!weather_attrs["wind_speed"].isNull()) {
-            out.wind_speed = weather_attrs["wind_speed"].as<float>();
-        }
-        if (!weather_attrs["wind_speed_unit"].isNull()) {
-            out.wind_speed_unit = weather_attrs["wind_speed_unit"].as<String>();
-        }
-        if (!weather_attrs["temperature_unit"].isNull() && out.temperature_unit == "°C") {
-            out.temperature_unit = weather_attrs["temperature_unit"].as<String>();
+        copy_json_float(weather_attrs["temperature"], out.weather_temperature);
+        copy_json_float(weather_attrs["humidity"], out.weather_humidity);
+        copy_json_float(weather_attrs["wind_speed"], out.wind_speed);
+        copy_json_string(weather_attrs["wind_speed_unit"], out.wind_speed_unit);
+        if (out.temperature_unit == "°C") {
+            copy_json_string(weather_attrs["temperature_unit"], out.temperature_unit);
         }
     }
 
