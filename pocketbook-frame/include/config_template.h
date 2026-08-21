@@ -21,6 +21,8 @@
 #define HA_ENTITY_HUMIDITY "sensor.humidity"
 #define HA_ENTITY_CO2 "sensor.co2"
 #define HA_ENTITY_WEATHER "weather.local"
+#define HA_HISTORY_HOURS 24
+#define HA_HISTORY_POINTS 48
 
 #define TFT_HOR_RES 758
 #define TFT_VER_RES 1024
