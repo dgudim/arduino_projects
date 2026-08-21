@@ -183,7 +183,8 @@ static void ha_fetch_history(HaSnapshot &out) {
         Logger.println("[ha] history skipped, clock not set");
         return;
     }
-    const time_t start = time(nullptr) - static_cast<time_t>(HA_HISTORY_HOURS) * 3600;
+    const time_t now = time(nullptr);
+    const time_t start = now - static_cast<time_t>(HA_HISTORY_HOURS) * 3600;
     char start_iso[32];
     format_iso_utc(start, start_iso, sizeof(start_iso));
 

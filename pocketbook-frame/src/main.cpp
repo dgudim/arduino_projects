@@ -3,6 +3,7 @@
 #include "frame_export.h"
 #include "ha_client.h"
 #include "web_log.h"
+#include "webserial_page.h"
 #include "wifi_connect.h"
 
 #include <ArduinoOTA.h>
@@ -145,7 +146,10 @@ static void run_export() {
 }
 
 static void setup_web_server() {
-    WebSerial.begin(&server, WEB_SERIAL_PATH);
+    WebSerial.begin(&server, "/webserial-stock");
+    server.on(WEB_SERIAL_PATH, HTTP_GET, [](AsyncWebServerRequest *request) {
+        serve_webserial_page(request);
+    });
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "text/html", format_status_page());
     });

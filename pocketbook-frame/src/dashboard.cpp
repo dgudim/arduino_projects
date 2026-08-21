@@ -274,8 +274,15 @@ void dashboard_update(const HaSnapshot &data) {
     if (!clock_is_set()) {
         return;
     }
+    struct tm t;
+    time_t now = time(nullptr);
+    if (localtime_r(&now, &t) == nullptr) {
+        return;
+    }
+    
     char clock_buf[16];
     char date_buf[48];
+    
     strftime(clock_buf, sizeof(clock_buf), "%H:%M", &t);
     strftime(date_buf, sizeof(date_buf), "%A, %d %b", &t);
     lv_label_set_text(clock_label, clock_buf);
