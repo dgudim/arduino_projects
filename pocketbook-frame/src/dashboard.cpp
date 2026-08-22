@@ -16,7 +16,7 @@ constexpr int32_t kHumGaugeMin = 0;
 constexpr int32_t kHumGaugeMax = 100;
 constexpr int32_t kCo2GaugeMin = 400;
 constexpr int32_t kCo2GaugeMax = 2000;
-constexpr int32_t kForecastIconSize = 40;
+constexpr int32_t kForecastIconSize = 32;
 
 lv_obj_t *clock_label = nullptr;
 lv_obj_t *date_label = nullptr;
@@ -150,7 +150,7 @@ lv_obj_t *make_forecast_card(lv_obj_t *parent, int32_t width, int32_t height) {
     lv_obj_set_size(card, width, height);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_style_pad_row(card, 2, 0);
 
     lv_obj_t *daily_title = lv_label_create(card);
     lv_label_set_text(daily_title, "Daily");
@@ -163,7 +163,7 @@ lv_obj_t *make_forecast_card(lv_obj_t *parent, int32_t width, int32_t height) {
     lv_label_set_text(hourly_title, "Hourly");
     lv_obj_set_style_text_font(hourly_title, &lv_font_montserrat_14, 0);
     lv_obj_set_width(hourly_title, lv_pct(100));
-    lv_obj_set_style_pad_top(hourly_title, 6, 0);
+    lv_obj_set_style_pad_top(hourly_title, 2, 0);
 
     make_forecast_row(card, hourly_slots, HA_FORECAST_HOURLY_COUNT, false);
     return card;

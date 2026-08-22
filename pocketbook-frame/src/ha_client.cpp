@@ -292,20 +292,42 @@ static bool ha_http_post_json(const String &path, const String &body, JsonDocume
         return false;
     }
 
-    const DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    const String payload = http.getString();
     http.end();
+    const DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     if (err) {
-        Logger.printf("[ha] forecast json error: %s\n", err.c_str());
+        Logger.printf("[ha] forecast json error: %s (%u bytes)\n", err.c_str(), payload.length());
         return false;
     }
     return true;
 }
 
-static void fill_forecast(JsonArray series, HaForecastPoint *out, uint8_t max_count, uint8_t &count, bool daily) {
+static JsonArrayConst find_forecast_series(JsonVariantConst doc) {
+    JsonVariantConst response = doc["service_response"];
+    if (response.is<JsonObjectConst>()) {
+        JsonArrayConst direct = response[HA_ENTITY_WEATHER]["forecast"].as<JsonArrayConst>();
+        if (!direct.isNull()) {
+            return direct;
+        }
+        for (JsonPairConst kv : response.as<JsonObjectConst>()) {
+            JsonArrayConst series = kv.value()["forecast"].as<JsonArrayConst>();
+            if (!series.isNull()) {
+                return series;
+            }
+        }
+    }
+    JsonArrayConst fallback = doc[HA_ENTITY_WEATHER]["forecast"].as<JsonArrayConst>();
+    if (!fallback.isNull()) {
+        return fallback;
+    }
+    return doc["forecast"].as<JsonArrayConst>();
+}
+
+static void fill_forecast(JsonArrayConst series, HaForecastPoint *out, uint8_t max_count, uint8_t &count, bool daily) {
     count = 0;
     const time_t now = clock_is_set() ? time(nullptr) : 0;
     const time_t period = daily ? 86400 : 3600;
-    for (JsonObject point : series) {
+    for (JsonObjectConst point : series) {
         if (count >= max_count) {
             break;
         }
@@ -340,29 +362,14 @@ static bool ha_fetch_forecast_type(const char *type, HaForecastPoint *out, uint8
     body += "\"}";
 
     JsonDocument filter;
-    JsonObject fields = filter["service_response"][HA_ENTITY_WEATHER]["forecast"][0];
-    fields["datetime"] = true;
-    fields["condition"] = true;
-    fields["temperature"] = true;
-    fields["templow"] = true;
-    fields["precipitation_probability"] = true;
-    fields["is_daytime"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["datetime"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["condition"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["temperature"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["templow"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["precipitation_probability"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["is_daytime"] = true;
+    filter["service_response"] = true;
 
     JsonDocument doc;
     if (!ha_http_post_json("/api/services/weather/get_forecasts?return_response=true", body, filter, doc)) {
         return false;
     }
 
-    JsonArray series = doc["service_response"][HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
-    if (series.isNull()) {
-        series = doc[HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
-    }
+    JsonArrayConst series = find_forecast_series(doc);
     if (series.isNull()) {
         Logger.printf("[ha] %s forecast missing in response\n", type);
         return false;
