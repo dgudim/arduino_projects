@@ -14,8 +14,8 @@ namespace {
 
 static_assert(TFT_VER_RES % 8 == 0, "esp_new_jpeg grayscale block mode needs height multiple of 8");
 
-constexpr int32_t kBlockRows = 8;  // grayscale MCU/block height; matches the LVGL tile height
-constexpr uint32_t kJpegOutCapBytes = 256 * 1024;  // max compressed JPEG size; encoder writes the whole file here
+constexpr int32_t kBlockRows = 8;                 // grayscale MCU/block height; matches the LVGL tile height
+constexpr uint32_t kJpegOutCapBytes = 256 * 1024; // max compressed JPEG size; encoder writes the whole file here
 constexpr uint8_t kJpegQuality = 90;
 
 struct JpegCapture {
@@ -205,8 +205,7 @@ bool write_jpeg_to_msc(EspUsbHostMscFS &msc, const uint8_t *data, size_t data_le
         }
         const size_t written_len = jpg_file_out.write(data + written_so_far, chunk_len);
         if (written_len != chunk_len) {
-            Logger.printf("[usb] JPEG file write failed wrote=%u expected=%u\n",
-                          static_cast<unsigned>(written_so_far + written_len), static_cast<unsigned>(data_len));
+            Logger.printf("[usb] JPEG file write failed wrote=%zu expected=%zu\n", written_so_far + written_len, data_len);
             jpg_file_out.close();
             return false;
         }
@@ -264,35 +263,38 @@ FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc
     const int32_t data_size = capture.jpeg_out_len;
     Logger.printf("[jpeg] encoded %d bytes\n", data_size);
 
-    if (!usb_safe_connect_start(usb)) {
-        result.message = "starting USB failed: ";
-        result.message += usb.lastErrorName();
-        jpeg_release(capture);
-        return result;
+    for (uint8_t attempt = 1; attempt <= USB_WRITE_RETRIES; attempt++) {
+
+        Logger.printf("[usb] writing %s (try %zu/%zu)\n", FRAME_JPG_PATH, attempt, USB_WRITE_RETRIES);
+        if (result.message.length() > 0) {
+            Logger.printf("[usb] %s \n", result.message.c_str());
+            Logger.printf("[usb] retrying write in %u ms\n", USB_WRITE_RETRY_DELAY_MS);
+            delay_serviced(USB_WRITE_RETRY_DELAY_MS);
+        }
+
+        if (!usb_safe_connect_start(usb)) {
+            result.message = String("starting USB failed: ") + usb.lastErrorName();
+            continue;
+        }
+
+        if (!usb_safe_mount(usb, msc)) {
+            result.message = String("mount failed: ") + usb.lastErrorName();
+            continue;
+        }
+
+        if (!write_jpeg_to_msc(msc, capture.jpeg_out, static_cast<size_t>(data_size))) {
+            result.message = "JPEG file write failed";
+            continue;
+        }
+
+        result.ok = true;
+        result.bytes = data_size;
+        result.message = String("wrote ") + FRAME_JPG_PATH;
+        Logger.printf("[usb] wrote %s (%d bytes)\n", FRAME_JPG_PATH, data_size);
+        break;
     }
 
-    if (!usb_safe_mount(usb, msc)) {
-        result.message = "mount failed: ";
-        result.message += usb.lastErrorName();
-        jpeg_release(capture);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-
-    Logger.printf("[usb] writing %s\n", FRAME_JPG_PATH);
-    if (!write_jpeg_to_msc(msc, capture.jpeg_out, static_cast<size_t>(data_size))) {
-        result.message = "JPEG file write failed";
-        jpeg_release(capture);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
     jpeg_release(capture);
-
-    result.ok = true;
-    result.bytes = data_size;
-    result.message = "wrote ";
-    result.message += FRAME_JPG_PATH;
-    Logger.printf("[usb] wrote %s (%d bytes)\n", FRAME_JPG_PATH, data_size);
     usb_safe_eject_unmount(usb, msc);
     return result;
 }
