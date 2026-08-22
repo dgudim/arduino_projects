@@ -130,7 +130,7 @@ bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
     while (millis() - mount_start < USB_MOUNT_TIMEOUT_MS) {
         service_background();
         if (usb.mscReady() &&
-            msc.begin(usb, USB_MOUNT_PATH, ESP_USB_HOST_ANY_ADDRESS, 0, 4, 1000, true)) {
+            msc.begin(usb, USB_MOUNT_PATH, ESP_USB_HOST_ANY_ADDRESS, 0, 4, USB_MSC_TIMEOUT_MS, true)) {
             Logger.println("[usb] mounted");
             return true;
         }
@@ -138,6 +138,84 @@ bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
     }
     Logger.printf("[usb] error mounting, timeout waiting for MSC device: %s\n", usb.lastErrorName());
     return false;
+}
+
+bool encode_frame_jpeg(lv_display_t *disp, JpegCapture &capture, String &error) {
+    jpeg_enc_config_t enc_cfg = DEFAULT_JPEG_ENC_CONFIG();
+    enc_cfg.width = TFT_HOR_RES;
+    enc_cfg.height = TFT_VER_RES;
+    enc_cfg.src_type = JPEG_PIXEL_FORMAT_GRAY;
+    enc_cfg.subsampling = JPEG_SUBSAMPLE_GRAY;
+    enc_cfg.quality = kJpegQuality;
+    enc_cfg.rotate = JPEG_ROTATE_0D;
+    enc_cfg.task_enable = false;
+
+    if (jpeg_enc_open(&enc_cfg, &capture.jpeg_enc) != JPEG_ERR_OK || capture.jpeg_enc == nullptr) {
+        error = "JPEG encoder open failed";
+        return false;
+    }
+
+    capture.jpeg_block_size = jpeg_enc_get_block_size(capture.jpeg_enc);
+    if (capture.jpeg_block_size <= 0 || capture.jpeg_block_size % kBlockRows != 0) {
+        error = "unexpected JPEG block size";
+        Logger.printf("[jpeg] %s got=%d\n", error.c_str(), capture.jpeg_block_size);
+        return false;
+    }
+    capture.strip_stride = capture.jpeg_block_size / kBlockRows;
+
+    capture.strip = static_cast<uint8_t *>(jpeg_calloc_align(capture.jpeg_block_size, 16));
+    capture.jpeg_out = static_cast<uint8_t *>(heap_caps_malloc(kJpegOutCapBytes, MALLOC_CAP_8BIT));
+    if (capture.strip == nullptr || capture.jpeg_out == nullptr) {
+        error = "no memory for JPEG buffers";
+        return false;
+    }
+    memset(capture.strip, 0xFF, capture.jpeg_block_size);
+
+    lv_display_set_user_data(disp, &capture);
+    lv_obj_invalidate(lv_display_get_screen_active(disp));
+    lv_refr_now(disp);
+    lv_display_set_user_data(disp, nullptr);
+
+    while (!capture.encode_failed && capture.next_y < TFT_VER_RES) {
+        encode_block(capture);
+        memset(capture.strip, 0xFF, capture.jpeg_block_size);
+        capture.next_y += kBlockRows;
+    }
+
+    if (capture.encode_failed || capture.jpeg_out_len <= 0) {
+        error = "JPEG encode failed";
+        Logger.printf("[jpeg] %s size=%d\n", error.c_str(), capture.jpeg_out_len);
+        return false;
+    }
+    return true;
+}
+
+bool write_jpeg_to_msc(EspUsbHostMscFS &msc, const uint8_t *data, size_t data_len) {
+    File jpg_file_out = msc.open(FRAME_JPG_PATH, FILE_WRITE);
+    if (!jpg_file_out) {
+        Logger.println("[usb] JPEG file open failed");
+        return false;
+    }
+
+    size_t written_so_far = 0;
+    while (written_so_far < data_len) {
+        size_t chunk_len = data_len - written_so_far;
+        if (chunk_len > USB_WRITE_CHUNK_BYTES) {
+            chunk_len = USB_WRITE_CHUNK_BYTES;
+        }
+        const size_t written_len = jpg_file_out.write(data + written_so_far, chunk_len);
+        if (written_len != chunk_len) {
+            Logger.printf("[usb] JPEG file write failed wrote=%u expected=%u\n",
+                          static_cast<unsigned>(written_so_far + written_len), static_cast<unsigned>(data_len));
+            jpg_file_out.close();
+            return false;
+        }
+        written_so_far += written_len;
+        service_background();
+    }
+    jpg_file_out.flush();
+    jpg_file_out.close();
+    return true;
 }
 
 } // namespace
@@ -177,99 +255,38 @@ void frame_export_on_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *p
 FrameExportResult export_lvgl_frame_to_usb(EspUsbHost &usb, EspUsbHostMscFS &msc, lv_display_t *disp) {
     FrameExportResult result;
 
+    JpegCapture capture;
+    if (!encode_frame_jpeg(disp, capture, result.message)) {
+        Logger.println("[jpeg] " + result.message);
+        jpeg_release(capture);
+        return result;
+    }
+    const int32_t data_size = capture.jpeg_out_len;
+    Logger.printf("[jpeg] encoded %d bytes\n", data_size);
+
     if (!usb_safe_connect_start(usb)) {
         result.message = "starting USB failed: ";
         result.message += usb.lastErrorName();
+        jpeg_release(capture);
         return result;
     }
 
     if (!usb_safe_mount(usb, msc)) {
         result.message = "mount failed: ";
         result.message += usb.lastErrorName();
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-    Logger.printf("[usb] Writing %s\n", FRAME_JPG_PATH);
-
-    JpegCapture capture;
-    jpeg_enc_config_t enc_cfg = DEFAULT_JPEG_ENC_CONFIG();
-    enc_cfg.width = TFT_HOR_RES;
-    enc_cfg.height = TFT_VER_RES;
-    enc_cfg.src_type = JPEG_PIXEL_FORMAT_GRAY;
-    enc_cfg.subsampling = JPEG_SUBSAMPLE_GRAY;
-    enc_cfg.quality = kJpegQuality;
-    enc_cfg.rotate = JPEG_ROTATE_0D;
-    enc_cfg.task_enable = false;
-
-    if (jpeg_enc_open(&enc_cfg, &capture.jpeg_enc) != JPEG_ERR_OK || capture.jpeg_enc == nullptr) {
-        result.message = "JPEG encoder open failed";
-        Logger.println("[usb] " + result.message);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-
-    capture.jpeg_block_size = jpeg_enc_get_block_size(capture.jpeg_enc);
-    if (capture.jpeg_block_size <= 0 || capture.jpeg_block_size % kBlockRows != 0) {
-        result.message = "unexpected JPEG block size";
-        Logger.printf("[usb] %s got=%d\n", result.message.c_str(), capture.jpeg_block_size);
-        jpeg_release(capture);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-    capture.strip_stride = capture.jpeg_block_size / kBlockRows;
-
-    capture.strip = static_cast<uint8_t *>(jpeg_calloc_align(capture.jpeg_block_size, 16));
-    capture.jpeg_out = static_cast<uint8_t *>(heap_caps_malloc(kJpegOutCapBytes, MALLOC_CAP_8BIT));
-    if (capture.strip == nullptr || capture.jpeg_out == nullptr) {
-        result.message = "no memory for JPEG buffers";
-        Logger.println("[usb] " + result.message);
-        jpeg_release(capture);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-    memset(capture.strip, 0xFF, capture.jpeg_block_size);
-
-    lv_display_set_user_data(disp, &capture);
-    lv_obj_invalidate(lv_display_get_screen_active(disp));
-    lv_refr_now(disp);
-    lv_display_set_user_data(disp, nullptr);
-
-    while (!capture.encode_failed && capture.next_y < TFT_VER_RES) {
-        encode_block(capture);
-        memset(capture.strip, 0xFF, capture.jpeg_block_size);
-        capture.next_y += kBlockRows;
-    }
-
-    const int32_t data_size = capture.jpeg_out_len;
-    if (capture.encode_failed || data_size <= 0) {
-        result.message = "JPEG encode failed";
-        Logger.printf("[usb] %s size=%d\n", result.message.c_str(), data_size);
         jpeg_release(capture);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }
 
-    msc.remove(FRAME_JPG_PATH);
-    File out = msc.open(FRAME_JPG_PATH, FILE_WRITE);
-    if (!out) {
-        result.message = "JPEG file open failed";
-        Logger.println("[usb] " + result.message);
-        jpeg_release(capture);
-        usb_safe_eject_unmount(usb, msc);
-        return result;
-    }
-    const size_t written = out.write(capture.jpeg_out, data_size);
-    out.flush();
-    out.close();
-    jpeg_release(capture);
-
-    if (written != static_cast<size_t>(data_size)) {
+    Logger.printf("[usb] writing %s\n", FRAME_JPG_PATH);
+    if (!write_jpeg_to_msc(msc, capture.jpeg_out, static_cast<size_t>(data_size))) {
         result.message = "JPEG file write failed";
-        Logger.printf("[usb] %s wrote=%u expected=%d\n", result.message.c_str(),
-                      static_cast<unsigned>(written), data_size);
+        jpeg_release(capture);
         usb_safe_eject_unmount(usb, msc);
         return result;
     }
+    jpeg_release(capture);
 
     result.ok = true;
     result.bytes = data_size;
