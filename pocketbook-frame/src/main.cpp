@@ -94,7 +94,7 @@ static String format_status_page() {
         if (!isnan(ha_data.temperature_history[i])) {
             temp_hist++;
         }
-        if (!isnan(ha_data.co2_history[i])) {
+        if (!isnan(ha_data.humidity_history[i])) {
             co2_hist++;
         }
     }

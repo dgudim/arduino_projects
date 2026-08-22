@@ -185,7 +185,7 @@ static void history_finish(const HistoryBuckets &buckets, float *out) {
 }
 
 static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSnapshot &out, uint32_t &temp_samples,
-                                 uint32_t &co2_samples) {
+                                 uint32_t &hum_samples) {
     // HA returns [[temp points...], [co2 points...]]. Parse one object at a time:
     // https://arduinojson.org/v7/how-to/deserialize-a-very-large-document/
     stream.setTimeout(HA_HTTP_TIMEOUT_MS);
@@ -201,7 +201,7 @@ static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSna
 
     const time_t span = end - start;
     HistoryBuckets temp_buckets;
-    HistoryBuckets co2_buckets;
+    HistoryBuckets hum_buckets;
     JsonDocument point;
     uint32_t series_index = 0;
 
@@ -222,11 +222,11 @@ static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSna
                 if (strcmp(entity_id, HA_ENTITY_TEMPERATURE) == 0) {
                     buckets = &temp_buckets;
                 } else if (strcmp(entity_id, HA_ENTITY_CO2) == 0) {
-                    buckets = &co2_buckets;
+                    buckets = &hum_buckets;
                 } else if (series_index == 0) {
                     buckets = &temp_buckets;
                 } else if (series_index == 1) {
-                    buckets = &co2_buckets;
+                    buckets = &hum_buckets;
                 }
                 first = false;
             }
@@ -234,7 +234,7 @@ static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSna
                 history_add_sample(*buckets, start, span, parse_ha_time(point["last_changed"] | ""),
                                    parse_float(point["state"] | ""));
             }
-            if ((temp_buckets.samples + co2_buckets.samples) % 64 == 0) {
+            if ((temp_buckets.samples + hum_buckets.samples) % 64 == 0) {
                 yield();
             }
         } while (stream.findUntil(",", "]"));
@@ -242,9 +242,9 @@ static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSna
     }
 
     history_finish(temp_buckets, out.temperature_history);
-    history_finish(co2_buckets, out.co2_history);
+    history_finish(hum_buckets, out.humidity_history);
     temp_samples = temp_buckets.samples;
-    co2_samples = co2_buckets.samples;
+    hum_samples = hum_buckets.samples;
     return true;
 }
 
@@ -263,7 +263,7 @@ static void ha_fetch_history(HaSnapshot &out) {
     path += "?filter_entity_id=";
     path += HA_ENTITY_TEMPERATURE;
     path += ",";
-    path += HA_ENTITY_CO2;
+    path += HA_ENTITY_HUMIDITY;
     path += "&minimal_response&no_attributes";
 
     String url = HA_URL;
@@ -287,13 +287,13 @@ static void ha_fetch_history(HaSnapshot &out) {
     }
 
     uint32_t temp_samples = 0;
-    uint32_t co2_samples = 0;
-    const bool parsed = parse_history_stream(http.getStream(), start, now, out, temp_samples, co2_samples);
+    uint32_t hum_samples = 0;
+    const bool parsed = parse_history_stream(http.getStream(), start, now, out, temp_samples, hum_samples);
     http.end();
     if (!parsed) {
         return;
     }
-    Logger.printf("[ha] history %dh loaded t=%u co2=%u\n", HA_HISTORY_HOURS, temp_samples, co2_samples);
+    Logger.printf("[ha] history %dh loaded t=%u co2=%u\n", HA_HISTORY_HOURS, temp_samples, hum_samples);
 }
 
 static String friendly_condition(const String &raw) {

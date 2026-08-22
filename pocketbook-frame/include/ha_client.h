@@ -33,14 +33,14 @@ struct HaSnapshot {
     uint8_t daily_count = 0;
     uint8_t hourly_count = 0;
     float temperature_history[HA_HISTORY_POINTS];
-    float co2_history[HA_HISTORY_POINTS];
+    float humidity_history[HA_HISTORY_POINTS];
     bool ok = false;
     String error;
 
     HaSnapshot() {
         for (uint32_t i = 0; i < HA_HISTORY_POINTS; i++) {
             temperature_history[i] = NAN;
-            co2_history[i] = NAN;
+            humidity_history[i] = NAN;
         }
     }
 };
