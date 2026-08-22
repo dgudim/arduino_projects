@@ -343,8 +343,8 @@ void dashboard_create(lv_display_t *disp) {
 
     char temp_title[40];
     char co2_title[40];
-    snprintf(temp_title, sizeof(temp_title), "Temperature · %dh", HA_HISTORY_HOURS);
-    snprintf(co2_title, sizeof(co2_title), "CO2 · %dh", HA_HISTORY_HOURS);
+    snprintf(temp_title, sizeof(temp_title), "Temperature - %dh", HA_HISTORY_HOURS);
+    snprintf(co2_title, sizeof(co2_title), "CO2 - %dh", HA_HISTORY_HOURS);
     temp_chart = make_chart(scr, temp_title, pad, charts_top, chart_w, chart_plot_h, kTempGaugeMin, kTempGaugeMax,
                             &temp_series);
     co2_chart = make_chart(scr, co2_title, pad, charts_top + chart_title_h + chart_plot_h + gap, chart_w, chart_plot_h,

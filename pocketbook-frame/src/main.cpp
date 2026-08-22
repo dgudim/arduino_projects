@@ -93,6 +93,24 @@ static String format_status_page() {
     page += String(ha_data.daily_count);
     page += "\nhourly forecast: ";
     page += String(ha_data.hourly_count);
+    uint32_t temp_hist = 0;
+    uint32_t co2_hist = 0;
+    for (uint32_t i = 0; i < HA_HISTORY_POINTS; i++) {
+        if (!isnan(ha_data.temperature_history[i])) {
+            temp_hist++;
+        }
+        if (!isnan(ha_data.co2_history[i])) {
+            co2_hist++;
+        }
+    }
+    page += "\ntemp history: ";
+    page += String(temp_hist);
+    page += "/";
+    page += String(HA_HISTORY_POINTS);
+    page += "\nco2 history: ";
+    page += String(co2_hist);
+    page += "/";
+    page += String(HA_HISTORY_POINTS);
     if (ha_data.error.length()) {
         page += "\nerror: ";
         page += ha_data.error;
