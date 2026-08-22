@@ -16,7 +16,10 @@ constexpr int32_t kHumGaugeMin = 0;
 constexpr int32_t kHumGaugeMax = 100;
 constexpr int32_t kCo2GaugeMin = 400;
 constexpr int32_t kCo2GaugeMax = 2000;
-constexpr int32_t kForecastIconSize = 32;
+constexpr int32_t kForecastIconSize = 48;
+constexpr int32_t kChartYScaleW = 48;
+constexpr int32_t kChartTitleH = 24;
+constexpr int32_t kChartXLabelH = 18;
 
 lv_obj_t *clock_label = nullptr;
 lv_obj_t *date_label = nullptr;
@@ -48,7 +51,7 @@ String format_number(float value, const char *suffix, int32_t decimals) {
         return "--";
     }
     char buf[32];
-    const char *space = (suffix[0] == '%' || suffix[0] == '\0') ? "" : " ";
+    const char *space = (suffix[0] != '\0' && suffix[0] != '%' && (unsigned char)suffix[0] < 0x80) ? " " : "";
     snprintf(buf, sizeof(buf), "%.*f%s%s", decimals, value, space, suffix);
     return String(buf);
 }
@@ -103,7 +106,7 @@ lv_obj_t *make_forecast_slot(lv_obj_t *parent, ForecastSlot *slot, bool show_low
 
     lv_obj_t *when = lv_label_create(column);
     lv_label_set_text(when, "--");
-    lv_obj_set_style_text_font(when, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(when, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(when, lv_color_hex(0x555555), 0);
     lv_label_set_long_mode(when, LV_LABEL_LONG_CLIP);
 
@@ -113,11 +116,11 @@ lv_obj_t *make_forecast_slot(lv_obj_t *parent, ForecastSlot *slot, bool show_low
 
     lv_obj_t *temp = lv_label_create(column);
     lv_label_set_text(temp, "--");
-    lv_obj_set_style_text_font(temp, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(temp, &lv_font_montserrat_24, 0);
 
     lv_obj_t *templow = lv_label_create(column);
     lv_label_set_text(templow, "");
-    lv_obj_set_style_text_font(templow, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(templow, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(templow, lv_color_hex(0x666666), 0);
     if (!show_low) {
         lv_obj_add_flag(templow, LV_OBJ_FLAG_HIDDEN);
@@ -135,9 +138,10 @@ lv_obj_t *make_forecast_row(lv_obj_t *parent, ForecastSlot *slots, uint8_t count
     lv_obj_t *row = lv_obj_create(parent);
     style_plain(row);
     lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_height(row, 0);
+    lv_obj_set_flex_grow(row, 1);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     for (uint8_t i = 0; i < count; i++) {
         make_forecast_slot(row, &slots[i], show_low);
     }
@@ -150,20 +154,21 @@ lv_obj_t *make_forecast_card(lv_obj_t *parent, int32_t width, int32_t height) {
     lv_obj_set_size(card, width, height);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(card, 2, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
 
     lv_obj_t *daily_title = lv_label_create(card);
     lv_label_set_text(daily_title, "Daily");
-    lv_obj_set_style_text_font(daily_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(daily_title, &lv_font_montserrat_16, 0);
     lv_obj_set_width(daily_title, lv_pct(100));
 
     make_forecast_row(card, daily_slots, HA_FORECAST_DAILY_COUNT, true);
 
     lv_obj_t *hourly_title = lv_label_create(card);
     lv_label_set_text(hourly_title, "Hourly");
-    lv_obj_set_style_text_font(hourly_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(hourly_title, &lv_font_montserrat_16, 0);
     lv_obj_set_width(hourly_title, lv_pct(100));
-    lv_obj_set_style_pad_top(hourly_title, 2, 0);
+    lv_obj_set_style_pad_top(hourly_title, 8, 0);
 
     make_forecast_row(card, hourly_slots, HA_FORECAST_HOURLY_COUNT, false);
     return card;
@@ -215,7 +220,7 @@ lv_obj_t *make_gauge_card(lv_obj_t *parent, const char *caption, int32_t width, 
 
     add_caption(card, caption);
 
-    const int32_t arc_size = height - 56;
+    const int32_t arc_size = LV_MIN(width - 28, height - 52);
     lv_obj_t *arc = lv_arc_create(card);
     lv_obj_set_size(arc, arc_size, arc_size);
     lv_arc_set_rotation(arc, 135);
@@ -240,16 +245,38 @@ lv_obj_t *make_gauge_card(lv_obj_t *parent, const char *caption, int32_t width, 
     return card;
 }
 
-lv_obj_t *make_chart(lv_obj_t *parent, const char *title, int32_t x, int32_t y, int32_t width, int32_t plot_height,
+lv_obj_t *make_chart(lv_obj_t *parent, const char *title, int32_t x, int32_t y, int32_t width, int32_t height,
                      int32_t min_value, int32_t max_value, lv_chart_series_t **series_out) {
+    const int32_t plot_h = height - kChartTitleH - kChartXLabelH;
+    const int32_t plot_w = width - kChartYScaleW;
+
     lv_obj_t *title_label = lv_label_create(parent);
     lv_label_set_text(title_label, title);
     lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_pos(title_label, x, y);
+    lv_obj_set_pos(title_label, x + kChartYScaleW, y);
+
+    lv_obj_t *scale = lv_scale_create(parent);
+    lv_obj_set_size(scale, kChartYScaleW, plot_h);
+    lv_obj_set_pos(scale, x, y + kChartTitleH);
+    lv_scale_set_mode(scale, LV_SCALE_MODE_VERTICAL_LEFT);
+    lv_scale_set_range(scale, min_value, max_value);
+    lv_scale_set_total_tick_count(scale, 3);
+    lv_scale_set_major_tick_every(scale, 1);
+    lv_scale_set_label_show(scale, true);
+    lv_obj_set_style_pad_ver(scale, 10, 0);
+    lv_obj_set_style_pad_right(scale, 4, 0);
+    lv_obj_set_style_text_font(scale, &lv_font_montserrat_14, LV_PART_INDICATOR);
+    lv_obj_set_style_text_font(scale, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(scale, lv_color_black(), LV_PART_INDICATOR);
+    lv_obj_set_style_line_color(scale, lv_color_black(), LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(scale, 2, LV_PART_INDICATOR);
+    lv_obj_set_style_length(scale, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(scale, 0, LV_PART_ITEMS);
+    lv_obj_set_style_line_width(scale, 2, LV_PART_MAIN);
 
     lv_obj_t *chart = lv_chart_create(parent);
-    lv_obj_set_size(chart, width, plot_height);
-    lv_obj_set_pos(chart, x, y + 26);
+    lv_obj_set_size(chart, plot_w, plot_h);
+    lv_obj_set_pos(chart, x + kChartYScaleW, y + kChartTitleH);
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(chart, kChartPoints);
     lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
@@ -268,6 +295,20 @@ lv_obj_t *make_chart(lv_obj_t *parent, const char *title, int32_t x, int32_t y, 
     lv_chart_series_t *series = lv_chart_add_series(chart, lv_color_black(), LV_CHART_AXIS_PRIMARY_Y);
     lv_chart_set_all_values(chart, series, LV_CHART_POINT_NONE);
     *series_out = series;
+
+    char start_label[12];
+    snprintf(start_label, sizeof(start_label), "-%dh", HA_HISTORY_HOURS);
+    lv_obj_t *x_start = lv_label_create(parent);
+    lv_label_set_text(x_start, start_label);
+    lv_obj_set_style_text_font(x_start, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(x_start, lv_color_hex(0x555555), 0);
+    lv_obj_set_pos(x_start, x + kChartYScaleW, y + kChartTitleH + plot_h);
+
+    lv_obj_t *x_end = lv_label_create(parent);
+    lv_label_set_text(x_end, "now");
+    lv_obj_set_style_text_font(x_end, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(x_end, lv_color_hex(0x555555), 0);
+    lv_obj_align_to(x_end, chart, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 0);
     return chart;
 }
 
@@ -301,15 +342,16 @@ void dashboard_create(lv_display_t *disp) {
     const int32_t pad = 32;
     const int32_t gap = 20;
     const int32_t header_h = 120;
-    const int32_t chart_title_h = 26;
-    const int32_t chart_plot_h = 140;
-    const int32_t charts_block = chart_title_h + chart_plot_h + gap + chart_title_h + chart_plot_h;
     const int32_t cards_top = pad + header_h;
-    const int32_t cards_h_total = TFT_VER_RES - pad - charts_block - gap - cards_top;
-    const int32_t card_h = (cards_h_total - gap) / 2;
-    const int32_t card_w = (TFT_HOR_RES - pad * 2 - gap) / 2;
-    const int32_t chart_w = TFT_HOR_RES - pad * 2;
-    const int32_t charts_top = cards_top + card_h * 2 + gap * 2;
+    const int32_t inner_w = TFT_HOR_RES - pad * 2;
+    const int32_t content_h = TFT_VER_RES - pad - cards_top;
+    const int32_t gauge_h = 196;
+    const int32_t chart_block_h = 220;
+    const int32_t forecast_h = content_h - gauge_h - chart_block_h - gap * 2;
+    const int32_t gauge_w = (inner_w - gap * 2) / 3;
+    const int32_t chart_w = (inner_w - gap) / 2;
+    const int32_t forecast_top = cards_top + gauge_h + gap;
+    const int32_t charts_top = forecast_top + forecast_h + gap;
 
     clock_label = lv_label_create(scr);
     lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_48, 0);
@@ -327,34 +369,34 @@ void dashboard_create(lv_display_t *disp) {
     lv_obj_align(status_label, LV_ALIGN_TOP_RIGHT, -pad, 40);
 
     lv_obj_t *temp_card =
-        make_gauge_card(scr, "Temperature", card_w, card_h, kTempGaugeMin, kTempGaugeMax, &temp_value, &temp_arc);
+        make_gauge_card(scr, "Temperature", gauge_w, gauge_h, kTempGaugeMin, kTempGaugeMax, &temp_value, &temp_arc);
     lv_obj_set_pos(temp_card, pad, cards_top);
 
     lv_obj_t *hum_card =
-        make_gauge_card(scr, "Humidity", card_w, card_h, kHumGaugeMin, kHumGaugeMax, &hum_value, &hum_arc);
-    lv_obj_set_pos(hum_card, pad + card_w + gap, cards_top);
+        make_gauge_card(scr, "Humidity", gauge_w, gauge_h, kHumGaugeMin, kHumGaugeMax, &hum_value, &hum_arc);
+    lv_obj_set_pos(hum_card, pad + gauge_w + gap, cards_top);
 
     lv_obj_t *co2_card =
-        make_gauge_card(scr, "CO2", card_w, card_h, kCo2GaugeMin, kCo2GaugeMax, &co2_value, &co2_arc);
-    lv_obj_set_pos(co2_card, pad, cards_top + card_h + gap);
+        make_gauge_card(scr, "CO2", gauge_w, gauge_h, kCo2GaugeMin, kCo2GaugeMax, &co2_value, &co2_arc);
+    lv_obj_set_pos(co2_card, pad + (gauge_w + gap) * 2, cards_top);
 
-    lv_obj_t *forecast_card = make_forecast_card(scr, card_w, card_h);
-    lv_obj_set_pos(forecast_card, pad + card_w + gap, cards_top + card_h + gap);
+    lv_obj_t *forecast_card = make_forecast_card(scr, inner_w, forecast_h);
+    lv_obj_set_pos(forecast_card, pad, forecast_top);
 
     char temp_title[40];
     char co2_title[40];
-    snprintf(temp_title, sizeof(temp_title), "Temperature - %dh", HA_HISTORY_HOURS);
-    snprintf(co2_title, sizeof(co2_title), "CO2 - %dh", HA_HISTORY_HOURS);
-    temp_chart = make_chart(scr, temp_title, pad, charts_top, chart_w, chart_plot_h, kTempGaugeMin, kTempGaugeMax,
+    snprintf(temp_title, sizeof(temp_title), "Temperature · %dh", HA_HISTORY_HOURS);
+    snprintf(co2_title, sizeof(co2_title), "CO2 · %dh", HA_HISTORY_HOURS);
+    temp_chart = make_chart(scr, temp_title, pad, charts_top, chart_w, chart_block_h, kTempGaugeMin, kTempGaugeMax,
                             &temp_series);
-    co2_chart = make_chart(scr, co2_title, pad, charts_top + chart_title_h + chart_plot_h + gap, chart_w, chart_plot_h,
-                           kCo2GaugeMin, kCo2GaugeMax, &co2_series);
+    co2_chart = make_chart(scr, co2_title, pad + chart_w + gap, charts_top, chart_w, chart_block_h, kCo2GaugeMin,
+                           kCo2GaugeMax, &co2_series);
 }
 
 void dashboard_update(const HaSnapshot &data) {
-    update_gauge(temp_value, temp_arc, data.temperature, data.temperature_unit.c_str(), 1, kTempGaugeMin, kTempGaugeMax);
-    update_gauge(hum_value, hum_arc, data.humidity, data.humidity_unit.c_str(), 0, kHumGaugeMin, kHumGaugeMax);
-    update_gauge(co2_value, co2_arc, data.co2, data.co2_unit.c_str(), 0, kCo2GaugeMin, kCo2GaugeMax);
+    update_gauge(temp_value, temp_arc, data.temperature, "°", 1, kTempGaugeMin, kTempGaugeMax);
+    update_gauge(hum_value, hum_arc, data.humidity, "%", 0, kHumGaugeMin, kHumGaugeMax);
+    update_gauge(co2_value, co2_arc, data.co2, "", 0, kCo2GaugeMin, kCo2GaugeMax);
 
     set_chart_history(temp_chart, temp_series, data.temperature_history);
     set_chart_history(co2_chart, co2_series, data.co2_history);
