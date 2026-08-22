@@ -134,7 +134,6 @@ bool usb_safe_mount(EspUsbHost &usb, EspUsbHostMscFS &msc) {
             Logger.println("[usb] mounted");
             return true;
         }
-        Logger.printf("[usb] waiting for MSC (%zu devices, last=%s)\n", usb.deviceCount(), usb.lastErrorName());
         delay(200);
     }
     Logger.printf("[usb] error mounting, timeout waiting for MSC device: %s\n", usb.lastErrorName());

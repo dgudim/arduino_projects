@@ -3,7 +3,6 @@
 
 from pathlib import Path
 
-import brotli
 import gzip
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +22,7 @@ def c_array(name: str, data: bytes) -> str:
 
 def main() -> None:
     html = HTML.read_bytes()
-    gzip_data = gzip.compress(html, compresslevel=9, mtime=0)
-    brotli_data = brotli.compress(html, quality=11)
+    gzip_data = gzip.compress(html, compresslevel=9)
     HEADER.write_text(
         "\n".join(
             [
@@ -36,20 +34,7 @@ def main() -> None:
                 "// Compressed from webserial/index.html by scripts/compress_webserial.py",
                 c_array("WEBSERIAL_HTML_GZIP", gzip_data),
                 "",
-                c_array("WEBSERIAL_HTML_BROTLI", brotli_data),
-                "",
                 "inline void serve_webserial_page(AsyncWebServerRequest *request) {",
-                '  const String encoding = request->hasHeader("Accept-Encoding")',
-                '      ? request->getHeader("Accept-Encoding")->value()',
-                '      : "";',
-                '  if (encoding.indexOf("br") >= 0) {',
-                "    AsyncWebServerResponse *response = request->beginResponse(200, \"text/html\",",
-                "                                                             WEBSERIAL_HTML_BROTLI,",
-                "                                                             sizeof(WEBSERIAL_HTML_BROTLI));",
-                '    response->addHeader("Content-Encoding", "br");',
-                "    request->send(response);",
-                "    return;",
-                "  }",
                 '  AsyncWebServerResponse *response = request->beginResponse(200, "text/html", WEBSERIAL_HTML_GZIP,',
                 "                                                           sizeof(WEBSERIAL_HTML_GZIP));",
                 '  response->addHeader("Content-Encoding", "gzip");',
@@ -60,7 +45,7 @@ def main() -> None:
         )
         + "\n"
     )
-    print(f"gzip {len(gzip_data)}  brotli {len(brotli_data)}")
+    print(f"gzip {len(gzip_data)}")
     print(f"wrote {HEADER.relative_to(ROOT)}")
 
 
