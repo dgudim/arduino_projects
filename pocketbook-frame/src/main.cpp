@@ -3,16 +3,12 @@
 #include "frame_export.h"
 #include "ha_client.h"
 #include "web_log.h"
-#include "webserial_page.h"
 #include "wifi_connect.h"
 
 #include <ArduinoOTA.h>
 #include <EspUsbHost.h>
-#include <WebSerial.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
-#include <esp_log.h>
-#include <esp_task_wdt.h>
 #include <lvgl.h>
 
 // Partial LVGL framebuffer: a full 758x1024 L8 frame still needs a lot of RAM, so we flush 8-line tiles.
@@ -32,8 +28,6 @@ uint32_t last_export_ms = 0;
 
 void service_background() {
     ArduinoOTA.handle();
-    WebSerial.loop();
-    esp_task_wdt_reset();
     yield();
 }
 
@@ -67,12 +61,13 @@ static void setup_ota() {
 static String format_status_page() {
     String page;
     page += F("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' "
-              "content='width=device-width, initial-scale=1'><title>" OTA_HOSTNAME "</title>");
+              "content='width=device-width, initial-scale=1'><meta http-equiv='refresh' content='");
+    page += String(WEB_PAGE_REFRESH_SEC);
+    page += F("'><title>" OTA_HOSTNAME "</title>");
     page += F("<style>body{font-family:sans-serif;max-width:720px;margin:24px auto;padding:0 16px;}"
               "a,button{font-size:16px} pre{background:#111;color:#d6ffd6;padding:12px;overflow:auto;}"
               "form{display:inline}</style></head><body>");
     page += F("<h1>" OTA_HOSTNAME "</h1>");
-    page += F("<p><a href='" WEB_SERIAL_PATH "'>Web serial</a></p>");
     page += "<p>IP: ";
     page += WiFi.localIP().toString();
     page += "<br>OTA: ";
@@ -121,6 +116,9 @@ static String format_status_page() {
     page += String(last_export.bytes);
     page += "</pre>";
     page += F("<form method='POST' action='" WEB_EXPORT_PATH "'><button type='submit'>Export frame now</button></form>");
+    page += F("<h2>Log</h2><pre>");
+    web_log_append_html(page);
+    page += F("</pre>");
     page += F("<p>PlatformIO OTA: <code>pio run -e " PIO_OTA_ENV " -t upload</code></p>");
     page += F("</body></html>");
     return page;
@@ -168,12 +166,10 @@ static void run_export() {
 }
 
 static void setup_web_server() {
-    WebSerial.begin(&server, "/webserial-stock");
-    server.on(WEB_SERIAL_PATH, HTTP_GET, [](AsyncWebServerRequest *request) {
-        serve_webserial_page(request);
-    });
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html", format_status_page());
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", format_status_page());
+        response->addHeader("Cache-Control", "no-store");
+        request->send(response);
     });
     server.on(WEB_EXPORT_PATH, HTTP_POST, [](AsyncWebServerRequest *request) {
         export_requested = true;
@@ -181,11 +177,10 @@ static void setup_web_server() {
     });
     server.begin();
     Logger.printf("[http] http://%s/\n", WiFi.localIP().toString().c_str());
-    Logger.printf("[http] serial at %s\n", WEB_SERIAL_PATH);
 }
 
 void setup() {
-    esp_log_set_vprintf(web_log_vprintf);
+    web_log_install();
     Logger.printf("[boot] %s\n", OTA_HOSTNAME);
 
     setup_lvgl();

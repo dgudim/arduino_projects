@@ -8,8 +8,10 @@
 #define OTA_PASSWORD ""
 
 #define WEB_HTTP_PORT 80
-#define WEB_SERIAL_PATH "/webserial"
 #define WEB_EXPORT_PATH "/export"
+#define WEB_LOG_LINES 30
+#define WEB_LOG_LINE_MAX 160
+#define WEB_PAGE_REFRESH_SEC 5
 #define PIO_OTA_ENV "lolin_s3_mini_ota"
 
 #define HA_URL "http://homeassistant.local:8123"
