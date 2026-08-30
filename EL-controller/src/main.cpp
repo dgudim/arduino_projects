@@ -13,7 +13,6 @@
 #define LED_B2 A5
 #define BUTTON_B 2
 
-#define HALF_BRIGHTNESS percentToDuty(50)
 #define BREATH_MIN percentToDuty(20)
 #define BREATH_MAX percentToDuty(100)
 
@@ -21,15 +20,13 @@
 #define FADE_SPREAD 1.6f
 
 #define BREATH_PERIOD_MS 4000
-#define HEARTBEAT_PERIOD_MS 1200
-#define HEARTBEAT_MIN percentToDuty(8)
+
+#define HEARTBEAT_PERIOD_MS 1600
+#define HEARTBEAT_MIN percentToDuty(15)
 #define HEARTBEAT_MAX percentToDuty(100)
 
-#define BUTTON_LOCKOUT_MS 400
+#define BUTTON_LOCKOUT_MS 150
 #define STAGGERED_TURN_ON_LED_MS 400
-
-#define PWM_SLEW_UP_STEP 2
-#define PWM_SLEW_DOWN_STEP 8
 
 #define PWM_FREQ_HZ 120
 
@@ -87,29 +84,6 @@ static void setAllLeds(Bank &bank, uint8_t duty) {
     bank.pwmTarget[2] = duty;
 }
 
-static void effectFull(Bank &bank) {
-    if (!bank.staggerTurnOnActive) {
-        setAllLeds(bank, 255);
-        return;
-    }
-
-    const uint32_t elapsed = millis() - bank.effectStartMs;
-    for (uint8_t i = 0; i < 3; i++) {
-        const int32_t t = (int32_t)elapsed - (int32_t)i * STAGGERED_TURN_ON_LED_MS;
-        float level = 0.0f;
-        if (t >= (int32_t)STAGGERED_TURN_ON_LED_MS) {
-            level = 1.0f;
-        } else if (t > 0) {
-            level = smoothstep(t / (float)STAGGERED_TURN_ON_LED_MS);
-        }
-        bank.pwmTarget[i] = (uint8_t)(level * 255.0f + 0.5f);
-    }
-
-    if (elapsed >= 3 * STAGGERED_TURN_ON_LED_MS) {
-        bank.staggerTurnOnActive = false;
-    }
-}
-
 static void effectFade(Bank &bank, uint32_t elapsedMs) {
     const float phase = cyclePhase(elapsedMs, FADE_PERIOD_MS);
     const float position = sinf(phase * 2.0f * (float)M_PI - (float)M_PI / 2.0f) + 1.0f;
@@ -138,7 +112,7 @@ static float gaussianPulse(float t, float center, float width) {
 
 static void effectHeartbeat(Bank &bank, uint32_t elapsedMs) {
     const float phase = cyclePhase(elapsedMs, HEARTBEAT_PERIOD_MS);
-    float wave = gaussianPulse(phase, 0.14f, 0.05f) + 0.55f * gaussianPulse(phase, 0.32f, 0.045f);
+    float wave = gaussianPulse(phase, 0.14f, 0.052f) + 0.55f * gaussianPulse(phase, 0.32f, 0.045f);
     if (wave > 1.0f) {
         wave = 1.0f;
     }
@@ -149,43 +123,45 @@ static void effectHeartbeat(Bank &bank, uint32_t elapsedMs) {
 }
 
 static void applyEffect(Bank &bank) {
-    const uint32_t elapsed = millis() - bank.effectStartMs;
+    const uint32_t elapsedMs = millis() - bank.effectStartMs;
+
+    if (bank.staggerTurnOnActive) {
+        for (uint8_t i = 0; i < 3; i++) {
+            const int32_t t = (int32_t)elapsedMs - (int32_t)i * STAGGERED_TURN_ON_LED_MS;
+            float level = 0.0f;
+            if (t >= (int32_t)STAGGERED_TURN_ON_LED_MS) {
+                level = 1.0f;
+            } else if (t > 0) {
+                level = smoothstep(t / (float)STAGGERED_TURN_ON_LED_MS);
+            }
+            bank.pwmTarget[i] = (uint8_t)(level * 255.0f + 0.5f);
+        }
+
+        if (elapsedMs >= 3 * STAGGERED_TURN_ON_LED_MS) {
+            bank.staggerTurnOnActive = false;
+        }
+        return;
+    }
 
     switch (bank.activeEffect) {
     case EFFECT_OFF:
         setAllLeds(bank, 0);
         break;
     case EFFECT_FULL:
-        effectFull(bank);
-        break;
-    case EFFECT_HALF:
-        setAllLeds(bank, HALF_BRIGHTNESS);
+        setAllLeds(bank, 255);
         break;
     case EFFECT_FADE:
-        effectFade(bank, elapsed);
+        effectFade(bank, elapsedMs);
         break;
     case EFFECT_BREATH:
-        effectBreath(bank, elapsed);
+        effectBreath(bank, elapsedMs);
         break;
     case EFFECT_HEARTBEAT:
-        effectHeartbeat(bank, elapsed);
+        effectHeartbeat(bank, elapsedMs);
         break;
     default:
         break;
     }
-}
-
-static bool usesDirectPwm(const Bank &bank) {
-    return bank.staggerTurnOnActive || bank.activeEffect == EFFECT_FADE ||
-           bank.activeEffect == EFFECT_BREATH || bank.activeEffect == EFFECT_HEARTBEAT;
-}
-
-static void nextEffect(Bank &bank) {
-    const bool prevEffectIsOff = (bank.activeEffect == EFFECT_OFF);
-    bank.activeEffect = (Effect)((bank.activeEffect + 1) % EFFECT_COUNT);
-    bank.effectStartMs = millis();
-    bank.staggerTurnOnActive = prevEffectIsOff;
-    applyEffect(bank);
 }
 
 static void initButton(GButton &button) {
@@ -225,35 +201,22 @@ void loop() {
     const uint32_t now = millis();
 
     for (uint8_t b = 0; b < 2; b++) {
+        Bank &bank = banks[b];
         buttons[b].tick();
-        if ((now - banks[b].lastClickMs) >= BUTTON_LOCKOUT_MS && buttons[b].isClick()) {
-            banks[b].lastClickMs = now;
-            nextEffect(banks[b]);
+        if ((now - bank.lastClickMs) >= BUTTON_LOCKOUT_MS && buttons[b].isClick()) {
+            bank.lastClickMs = now;
+            bool prevEffectOff = bank.activeEffect == EFFECT_OFF;
+            bank.activeEffect = (Effect)((bank.activeEffect + 1) % EFFECT_COUNT);
+            bank.effectStartMs = millis();
+            bank.staggerTurnOnActive = prevEffectOff;
         }
     }
 
     for (uint8_t b = 0; b < 2; b++) {
         Bank &bank = banks[b];
         applyEffect(bank);
-        if (usesDirectPwm(bank)) {
-            setPwm(bank.pwmBaseOffset + 0, bank.pwmTarget[0]);
-            setPwm(bank.pwmBaseOffset + 1, bank.pwmTarget[1]);
-            setPwm(bank.pwmBaseOffset + 2, bank.pwmTarget[2]);
-        } else {
-            for (uint8_t i = 0; i < 3; i++) {
-                const uint8_t pwmChannel = bank.pwmBaseOffset + i;
-                const uint8_t currentDuty = pwmDuty[pwmChannel];
-                const uint8_t targetDuty = bank.pwmTarget[i];
-
-                if (currentDuty < targetDuty) {
-                    const uint8_t next = currentDuty + PWM_SLEW_UP_STEP;
-                    setPwm(pwmChannel, (next > targetDuty) ? targetDuty : next);
-                } else if (currentDuty > targetDuty) {
-                    const uint8_t delta = currentDuty - targetDuty;
-                    // Bypass unsigned int undeflow
-                    setPwm(pwmChannel, (delta < PWM_SLEW_DOWN_STEP) ? targetDuty : (uint8_t)(currentDuty - PWM_SLEW_DOWN_STEP));
-                }
-            }
-        }
+        setPwm(bank.pwmBaseOffset + 0, bank.pwmTarget[0]);
+        setPwm(bank.pwmBaseOffset + 1, bank.pwmTarget[1]);
+        setPwm(bank.pwmBaseOffset + 2, bank.pwmTarget[2]);
     }
 }
