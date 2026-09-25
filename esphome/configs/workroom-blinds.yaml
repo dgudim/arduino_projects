@@ -10,19 +10,7 @@ esphome:
       - stepper.set_target:
           id: blinds_stepper
           target: !lambda return id(stepper_position);
-      - if: 
-          condition:
-            - lambda: 'return id(stepper_position) == 0;'
-          then: 
-            - cover.template.publish:
-                id: blinds
-                state: Closed
-                current_operation: IDLE
-          else:
-            - cover.template.publish:
-                id: blinds
-                state: Open
-                current_operation: IDLE 
+      - script.execute: publish_blinds
 
 esp32:
   board: lolin_c3_mini
@@ -48,6 +36,7 @@ api:
         - globals.set:
             id: stepper_position
             value: '0'
+        - script.execute: publish_blinds
     - action: set_open_position
       then:
         - stepper.report_position:
@@ -59,16 +48,15 @@ api:
         - globals.set:
             id: end_position
             value: !lambda return id(stepper_position);
+        - script.execute: publish_blinds
     - action: control_stepper
       variables:
         target: int
       then:
-        - stepper.set_target:
-            id: blinds_stepper
-            target: !lambda 'return target;'
         - globals.set:
-            id: stepper_position
-            value: !lambda return target;
+            id: move_target
+            value: !lambda 'return target;'
+        - script.execute: move_blinds
 
 ota:
   - platform: esphome
@@ -93,7 +81,7 @@ wifi:
     ssid: Workroom-Blinds Fallback Hotspot
     password: !secret fallback_hotspot_password
 captive_portal:
-    
+
 preferences:
   flash_write_interval: 10s
 
@@ -106,6 +94,16 @@ globals:
     type: int
     restore_value: true
     initial_value: '500'
+  # Requested destination, without compensation.
+  - id: move_target
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # Position where the current upward run began. (kept so up we add the compensation once)
+  - id: upward_origin
+    type: int
+    restore_value: false
+    initial_value: '0'
 
 stepper:
   - platform: a4988
@@ -116,47 +114,123 @@ stepper:
     max_speed: 3500 steps/s
     acceleration: 600
     deceleration: 600
-    
+
+
+number:
+  # Extra steps added to every upward move.
+  - platform: template
+    name: "Top compensation"
+    id: top_compensation
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    min_value: 0
+    max_value: 5000
+    step: 10
+    unit_of_measurement: steps
+    mode: box
+    set_action:
+      - logger.log:
+          format: "Top compensation set to %.0f steps"
+          args: ["x"]
 
 cover:
   - platform: template
     id: blinds
     device_class: blind
     name: "Work room blinds"
+    has_position: true
+    assumed_state: false
     open_action:
-      - stepper.set_target:
-          id: blinds_stepper
-          target: !lambda return id(end_position);
       - globals.set:
-          id: stepper_position
-          value: !lambda return id(end_position);
+          id: move_target
+          value: !lambda 'return id(end_position);'
+      - script.execute: move_blinds
     close_action:
-      - stepper.set_target:
-          id: blinds_stepper
-          target: 0
       - globals.set:
-          id: stepper_position
+          id: move_target
           value: '0'
+      - script.execute: move_blinds
     stop_action:
       - stepper.set_target:
           id: blinds_stepper
           target: !lambda return id(blinds_stepper).current_position;
+      - script.stop: move_blinds
       - globals.set:
           id: stepper_position
-          value: !lambda return id(blinds_stepper).current_position;
-    optimistic: true
+          value: !lambda |-
+            int pos = id(blinds_stepper).current_position;
+            return pos < 0 ? 0 : pos;
+      - script.execute: publish_blinds
+    position_action:
+      - globals.set:
+          id: move_target
+          value: !lambda |-
+            if (pos <= 0.01f) return 0;
+            if (pos >= 0.99f) return id(end_position);
+            return (int) (pos * id(end_position));
+      - script.execute: move_blinds
+
+script:
+  - id: publish_blinds
+    then:
+      - cover.template.publish:
+          id: blinds
+          position: !lambda |-
+            if (id(end_position) <= 0) return 0.0f;
+            float position = float(id(blinds_stepper).current_position) / float(id(end_position));
+            if (position < 0.0f) return 0.0f;
+            if (position > 1.0f) return 1.0f;
+            return position;
+          current_operation: !lambda |-
+            int current = id(blinds_stepper).current_position;
+            int target = id(blinds_stepper).target_position;
+            if (current == target) return COVER_OPERATION_IDLE;
+            return target > current ? COVER_OPERATION_OPENING : COVER_OPERATION_CLOSING;
+  - id: move_blinds
+    mode: restart
+    then:
+      - stepper.set_target:
+          id: blinds_stepper
+          target: !lambda |-
+            // Idle: this command starts a run. While moving, keep the existing origin.
+            int current = id(blinds_stepper).current_position;
+            if (current == id(blinds_stepper).target_position)
+              id(upward_origin) = current;
+            // Add the extra steps once per upward run.
+            int target = id(move_target);
+            if (target > id(upward_origin))
+              target += (int) id(top_compensation).state;
+            return target;
+      - script.execute: publish_blinds
+      - while:
+          condition:
+            lambda: 'return id(blinds_stepper).current_position != id(blinds_stepper).target_position;'
+          then:
+            - globals.set:
+                id: stepper_position
+                value: !lambda |-
+                  int pos = id(blinds_stepper).current_position;
+                  return pos < 0 ? 0 : pos;
+            - script.execute: publish_blinds
+            - delay: 500ms
+      - globals.set:
+          id: stepper_position
+          value: !lambda |-
+            int pos = id(blinds_stepper).current_position;
+            return pos < 0 ? 0 : pos;
+      - script.execute: publish_blinds
 
 
 binary_sensor:
   - platform: gpio
     pin:
       number: GPIO4
-      inverted: false 
-      mode: 
-        input: true 
-        pullup: false 
+      mode:
+        input: true
+        pulldown: true
     name: "Blinds trigger button"
     filters:
       - delayed_on: 1000ms
       - delayed_off: 1000ms
-          
