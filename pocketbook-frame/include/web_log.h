@@ -13,4 +13,6 @@ public:
 extern WebLog Logger;
 extern AsyncWebServer server;
 
+void web_log_install();
+void web_log_append_html(String &out);
 int web_log_vprintf(const char *fmt, va_list args);

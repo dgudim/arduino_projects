@@ -8,8 +8,10 @@
 #define OTA_PASSWORD ""
 
 #define WEB_HTTP_PORT 80
-#define WEB_SERIAL_PATH "/webserial"
 #define WEB_EXPORT_PATH "/export"
+#define WEB_LOG_LINES 30
+#define WEB_LOG_LINE_MAX 160
+#define WEB_PAGE_REFRESH_SEC 5
 #define PIO_OTA_ENV "lolin_s3_mini_ota"
 
 #define HA_URL "http://homeassistant.local:8123"
@@ -23,8 +25,8 @@
 #define HA_ENTITY_WEATHER "weather.local"
 #define HA_HISTORY_HOURS 24
 #define HA_HISTORY_POINTS 48
-#define HA_FORECAST_DAILY_COUNT 5
-#define HA_FORECAST_HOURLY_COUNT 5
+#define HA_FORECAST_DAILY_COUNT 7
+#define HA_FORECAST_HOURLY_COUNT 7
 
 #define TFT_HOR_RES 758
 #define TFT_VER_RES 1024
@@ -35,3 +37,7 @@
 #define USB_EXPORT_COOLDOWN_MS 20000
 #define USB_MOUNT_TIMEOUT_MS 30000
 #define USB_HOST_SETTLE_MS 1500
+#define USB_MSC_TIMEOUT_MS 5000
+#define USB_WRITE_CHUNK_BYTES 4096
+#define USB_WRITE_RETRIES 3
+#define USB_WRITE_RETRY_DELAY_MS 1500

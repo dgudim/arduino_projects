@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -64,11 +65,21 @@ static bool ha_get_state(const char *entity_id, String &state, JsonDocument &doc
     return state.length() > 0 && state != "unknown" && state != "unavailable";
 }
 
-static float parse_float(const String &value) {
-    if (value.length() == 0) {
+static float parse_float(const char *value) {
+    if (value == nullptr || value[0] == '\0' || strcmp(value, "unknown") == 0 ||
+        strcmp(value, "unavailable") == 0) {
         return NAN;
     }
-    return value.toFloat();
+    char *end = nullptr;
+    const float parsed = strtof(value, &end);
+    if (end == value) {
+        return NAN;
+    }
+    return parsed;
+}
+
+static float parse_float(const String &value) {
+    return parse_float(value.c_str());
 }
 
 static void copy_json_string(JsonVariantConst value, String &out) {
@@ -141,41 +152,100 @@ static void format_iso_utc(time_t t, char *buf, size_t buf_len) {
     strftime(buf, buf_len, "%Y-%m-%dT%H:%M:%SZ", &utc);
 }
 
-static void downsample_history(JsonArray series, time_t start, time_t end, float *out) {
+struct HistoryBuckets {
     float sums[HA_HISTORY_POINTS] = {};
     uint16_t counts[HA_HISTORY_POINTS] = {};
-    const time_t span = end - start;
-    if (span <= 0) {
+    uint32_t samples = 0;
+};
+
+static void history_add_sample(HistoryBuckets &buckets, time_t start, time_t span, time_t t, float value) {
+    if (span <= 0 || t <= 0 || isnan(value)) {
         return;
     }
-
-    for (JsonObject point : series) {
-        const float value = parse_float(point["state"].as<String>());
-        if (isnan(value)) {
-            continue;
-        }
-        const time_t t = parse_ha_time(point["last_changed"] | "");
-        if (t <= 0) {
-            continue;
-        }
-        int32_t bucket = static_cast<int32_t>(((int64_t)(t - start) * HA_HISTORY_POINTS) / span);
-        if (bucket < 0) {
-            bucket = 0;
-        }
-        if (bucket >= static_cast<int32_t>(HA_HISTORY_POINTS)) {
-            bucket = HA_HISTORY_POINTS - 1;
-        }
-        sums[bucket] += value;
-        counts[bucket]++;
+    int32_t bucket = static_cast<int32_t>(((int64_t)(t - start) * HA_HISTORY_POINTS) / span);
+    if (bucket < 0) {
+        bucket = 0;
     }
+    if (bucket >= static_cast<int32_t>(HA_HISTORY_POINTS)) {
+        bucket = HA_HISTORY_POINTS - 1;
+    }
+    buckets.sums[bucket] += value;
+    buckets.counts[bucket]++;
+    buckets.samples++;
+}
 
+static void history_finish(const HistoryBuckets &buckets, float *out) {
     float last = NAN;
     for (uint32_t i = 0; i < HA_HISTORY_POINTS; i++) {
-        if (counts[i] > 0) {
-            last = sums[i] / counts[i];
+        if (buckets.counts[i] > 0) {
+            last = buckets.sums[i] / buckets.counts[i];
         }
         out[i] = last;
     }
+}
+
+static bool parse_history_stream(Stream &stream, time_t start, time_t end, HaSnapshot &out, uint32_t &temp_samples,
+                                 uint32_t &hum_samples) {
+    // HA returns [[temp points...], [co2 points...]]. Parse one object at a time:
+    // https://arduinojson.org/v7/how-to/deserialize-a-very-large-document/
+    stream.setTimeout(HA_HTTP_TIMEOUT_MS);
+    if (!stream.find("[")) {
+        Logger.println("[ha] history json: expected array");
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["entity_id"] = true;
+    filter["state"] = true;
+    filter["last_changed"] = true;
+
+    const time_t span = end - start;
+    HistoryBuckets temp_buckets;
+    HistoryBuckets hum_buckets;
+    JsonDocument point;
+    uint32_t series_index = 0;
+
+    while (stream.findUntil("[", "]")) {
+        HistoryBuckets *buckets = nullptr;
+        bool first = true;
+        do {
+            point.clear();
+            const DeserializationError err =
+                deserializeJson(point, stream, DeserializationOption::Filter(filter));
+            if (err) {
+                Logger.printf("[ha] history point json error: %s\n", err.c_str());
+                return false;
+            }
+
+            if (first) {
+                const char *entity_id = point["entity_id"] | "";
+                if (strcmp(entity_id, HA_ENTITY_TEMPERATURE) == 0) {
+                    buckets = &temp_buckets;
+                } else if (strcmp(entity_id, HA_ENTITY_CO2) == 0) {
+                    buckets = &hum_buckets;
+                } else if (series_index == 0) {
+                    buckets = &temp_buckets;
+                } else if (series_index == 1) {
+                    buckets = &hum_buckets;
+                }
+                first = false;
+            }
+            if (buckets != nullptr) {
+                history_add_sample(*buckets, start, span, parse_ha_time(point["last_changed"] | ""),
+                                   parse_float(point["state"] | ""));
+            }
+            if ((temp_buckets.samples + hum_buckets.samples) % 64 == 0) {
+                yield();
+            }
+        } while (stream.findUntil(",", "]"));
+        series_index++;
+    }
+
+    history_finish(temp_buckets, out.temperature_history);
+    history_finish(hum_buckets, out.humidity_history);
+    temp_samples = temp_buckets.samples;
+    hum_samples = hum_buckets.samples;
+    return true;
 }
 
 static void ha_fetch_history(HaSnapshot &out) {
@@ -193,7 +263,7 @@ static void ha_fetch_history(HaSnapshot &out) {
     path += "?filter_entity_id=";
     path += HA_ENTITY_TEMPERATURE;
     path += ",";
-    path += HA_ENTITY_CO2;
+    path += HA_ENTITY_HUMIDITY;
     path += "&minimal_response&no_attributes";
 
     String url = HA_URL;
@@ -201,6 +271,7 @@ static void ha_fetch_history(HaSnapshot &out) {
 
     WiFiClient client;
     HTTPClient http;
+    client.setTimeout(HA_HTTP_TIMEOUT_MS);
     http.setTimeout(HA_HTTP_TIMEOUT_MS);
     if (!http.begin(client, url)) {
         Logger.println("[ha] history begin failed");
@@ -215,46 +286,14 @@ static void ha_fetch_history(HaSnapshot &out) {
         return;
     }
 
-    JsonDocument filter;
-    filter[0][0]["entity_id"] = true;
-    filter[0][0]["state"] = true;
-    filter[0][0]["last_changed"] = true;
-
-    JsonDocument doc;
-    const DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    uint32_t temp_samples = 0;
+    uint32_t hum_samples = 0;
+    const bool parsed = parse_history_stream(http.getStream(), start, now, out, temp_samples, hum_samples);
     http.end();
-    if (err) {
-        Logger.printf("[ha] history json error: %s\n", err.c_str());
+    if (!parsed) {
         return;
     }
-
-    JsonArray root = doc.as<JsonArray>();
-    struct {
-        const char *entity_id;
-        float *dest;
-    } targets[] = {
-        {HA_ENTITY_TEMPERATURE, out.temperature_history},
-        {HA_ENTITY_CO2, out.co2_history},
-    };
-    uint32_t series_index = 0;
-    for (JsonArray series : root) {
-        const char *entity_id = series.size() ? series[0]["entity_id"] | "" : "";
-        float *dest = nullptr;
-        for (auto &target : targets) {
-            if (strcmp(entity_id, target.entity_id) == 0) {
-                dest = target.dest;
-                break;
-            }
-        }
-        if (dest == nullptr && series_index < (sizeof(targets) / sizeof(targets[0]))) {
-            dest = targets[series_index].dest;
-        }
-        series_index++;
-        if (dest != nullptr) {
-            downsample_history(series, start, now, dest);
-        }
-    }
-    Logger.printf("[ha] history %dh loaded\n", HA_HISTORY_HOURS);
+    Logger.printf("[ha] history %dh loaded t=%u co2=%u\n", HA_HISTORY_HOURS, temp_samples, hum_samples);
 }
 
 static String friendly_condition(const String &raw) {
@@ -292,20 +331,42 @@ static bool ha_http_post_json(const String &path, const String &body, JsonDocume
         return false;
     }
 
-    const DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    const String payload = http.getString();
     http.end();
+    const DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     if (err) {
-        Logger.printf("[ha] forecast json error: %s\n", err.c_str());
+        Logger.printf("[ha] forecast json error: %s (%u bytes)\n", err.c_str(), payload.length());
         return false;
     }
     return true;
 }
 
-static void fill_forecast(JsonArray series, HaForecastPoint *out, uint8_t max_count, uint8_t &count, bool daily) {
+static JsonArrayConst find_forecast_series(JsonVariantConst doc) {
+    JsonVariantConst response = doc["service_response"];
+    if (response.is<JsonObjectConst>()) {
+        JsonArrayConst direct = response[HA_ENTITY_WEATHER]["forecast"].as<JsonArrayConst>();
+        if (!direct.isNull()) {
+            return direct;
+        }
+        for (JsonPairConst kv : response.as<JsonObjectConst>()) {
+            JsonArrayConst series = kv.value()["forecast"].as<JsonArrayConst>();
+            if (!series.isNull()) {
+                return series;
+            }
+        }
+    }
+    JsonArrayConst fallback = doc[HA_ENTITY_WEATHER]["forecast"].as<JsonArrayConst>();
+    if (!fallback.isNull()) {
+        return fallback;
+    }
+    return doc["forecast"].as<JsonArrayConst>();
+}
+
+static void fill_forecast(JsonArrayConst series, HaForecastPoint *out, uint8_t max_count, uint8_t &count, bool daily) {
     count = 0;
     const time_t now = clock_is_set() ? time(nullptr) : 0;
     const time_t period = daily ? 86400 : 3600;
-    for (JsonObject point : series) {
+    for (JsonObjectConst point : series) {
         if (count >= max_count) {
             break;
         }
@@ -340,29 +401,14 @@ static bool ha_fetch_forecast_type(const char *type, HaForecastPoint *out, uint8
     body += "\"}";
 
     JsonDocument filter;
-    JsonObject fields = filter["service_response"][HA_ENTITY_WEATHER]["forecast"][0];
-    fields["datetime"] = true;
-    fields["condition"] = true;
-    fields["temperature"] = true;
-    fields["templow"] = true;
-    fields["precipitation_probability"] = true;
-    fields["is_daytime"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["datetime"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["condition"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["temperature"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["templow"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["precipitation_probability"] = true;
-    filter[HA_ENTITY_WEATHER]["forecast"][0]["is_daytime"] = true;
+    filter["service_response"] = true;
 
     JsonDocument doc;
     if (!ha_http_post_json("/api/services/weather/get_forecasts?return_response=true", body, filter, doc)) {
         return false;
     }
 
-    JsonArray series = doc["service_response"][HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
-    if (series.isNull()) {
-        series = doc[HA_ENTITY_WEATHER]["forecast"].as<JsonArray>();
-    }
+    JsonArrayConst series = find_forecast_series(doc);
     if (series.isNull()) {
         Logger.printf("[ha] %s forecast missing in response\n", type);
         return false;
