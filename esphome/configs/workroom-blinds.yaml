@@ -72,7 +72,7 @@ api:
 
 ota:
   - platform: esphome
-    password: !secret workroom_blinds__ota_password
+    encryption:
 
 wifi:
   networks:

@@ -19,8 +19,8 @@ logger:
 api:
   encryption:
     key: !secret meteostation__encryption_key
-  services: 
-    - service: control_compensation
+  actions: 
+    - action: control_compensation
       variables:
         target: float
       then:
@@ -30,7 +30,7 @@ api:
 
 ota:
   - platform: esphome
-    password: !secret meteostation__ota_password
+    encryption:
 
 wifi:
   networks:

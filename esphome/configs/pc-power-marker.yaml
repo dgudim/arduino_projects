@@ -17,7 +17,7 @@ api:
     key: !secret pc_power_marker__encryption_key
 ota:
   - platform: esphome
-    password: !secret pc_power_marker__ota_password
+    encryption:
 
 wifi:
   networks:

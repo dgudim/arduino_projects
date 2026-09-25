@@ -19,7 +19,7 @@ api:
 
 ota:
   - platform: esphome
-    password: !secret ir_hub__ota_password
+    encryption:
 
 wifi:
   networks:

@@ -16,7 +16,7 @@ api:
     key: !secret ble_proxy__encryption_key
 ota:
   - platform: esphome
-    password: !secret ble_proxy__ota_password
+    encryption:
 
 wifi:
   networks:
