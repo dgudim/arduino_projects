@@ -154,7 +154,7 @@ remote_transmitter:
 
 light:
   - platform: esp32_rmt_led_strip
-    rgb_order: GRB
+    channel_colors: GRB
     chipset: WS2812
     pin: 5
     num_leds: 1
@@ -162,7 +162,7 @@ light:
     restore_mode: ALWAYS_OFF
     rmt_symbols: 48
   - platform: esp32_rmt_led_strip
-    rgb_order: GRB
+    channel_colors: GRB
     chipset: WS2812
     pin: 21
     num_leds: 1

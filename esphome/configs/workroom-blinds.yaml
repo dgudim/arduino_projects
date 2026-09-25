@@ -36,8 +36,8 @@ logger:
 api:
   encryption:
     key: !secret workroom_blinds__encryption_key
-  services:
-    - service: set_closed_position
+  actions:
+    - action: set_closed_position
       then:
         - stepper.report_position:
             id: blinds_stepper
@@ -48,7 +48,7 @@ api:
         - globals.set:
             id: stepper_position
             value: '0'
-    - service: set_open_position
+    - action: set_open_position
       then:
         - stepper.report_position:
             id: blinds_stepper
@@ -59,7 +59,7 @@ api:
         - globals.set:
             id: end_position
             value: !lambda return id(stepper_position);
-    - service: control_stepper
+    - action: control_stepper
       variables:
         target: int
       then:
